@@ -4,6 +4,12 @@ import {
   hashAssessmentRawText,
   parseChatGptAssessment,
 } from '../domain/assessment';
+import {
+  BACKUP_CONTRACT_VERSION,
+  createBackupEnvelope,
+  parseBackupJson,
+  validateBackupPayload,
+} from '../domain/backup';
 import type {
   AssessmentSections,
   ImprovementIssueStatus,
@@ -65,6 +71,7 @@ import {
   summarizeTrainingGame,
   type TrainingThrowInput,
 } from '../domain/training';
+import { CURRENT_SCHEMA_VERSION } from './schema';
 
 const accountId = 'local-account';
 const playerId = 'owner-player';
@@ -1130,40 +1137,54 @@ export function createMemorySupportRepository(): SupportRepository {
       }
     },
     async exportBackup() {
+      const exportedAt = nowIso();
+      const payload = {
+        accounts: [{ id: accountId }],
+        players: [{ id: playerId, account_id: accountId }],
+        daily_practice_items: items,
+        form_videos: videos,
+        ai_form_assessments: assessments,
+        improvement_issues: issues,
+        practice_recommendations: recommendations,
+        next_focus_items: focusItems,
+        player_skill_profiles: [skillProfile],
+        player_level_history: levelHistory,
+        training_game_sessions: trainingGames,
+        training_throws: trainingThrows,
+        throw_photo_sessions: photoSessions,
+        training_drill_definitions: drillDefinitions,
+        daily_minimum_plans: dailyMinimumPlans.map((bundle) => bundle.plan),
+        daily_minimum_items: dailyMinimumPlans.flatMap((bundle) => bundle.items),
+        drill_sessions: drillSessions,
+        drill_throw_results: drillThrowResults,
+        drill_results: drillResults,
+        recommended_drills: recommendedDrills,
+      };
       return JSON.stringify(
         {
-          app: 'DartsSupportApp',
-          schemaVersion: 1,
-          exportedAt: nowIso(),
-          accounts: [{ id: accountId }],
-          players: [{ id: playerId, account_id: accountId }],
-          daily_practice_items: items,
-          form_videos: videos,
-          ai_form_assessments: assessments,
-          improvement_issues: issues,
-          practice_recommendations: recommendations,
-          next_focus_items: focusItems,
-          player_skill_profiles: [skillProfile],
-          player_level_history: levelHistory,
-          training_game_sessions: trainingGames,
-          training_throws: trainingThrows,
-          throw_photo_sessions: photoSessions,
-          training_drill_definitions: drillDefinitions,
-          daily_minimum_plans: dailyMinimumPlans.map((bundle) => bundle.plan),
-          daily_minimum_items: dailyMinimumPlans.flatMap((bundle) => bundle.items),
-          drill_sessions: drillSessions,
-          drill_throw_results: drillThrowResults,
-          drill_results: drillResults,
-          recommended_drills: recommendedDrills,
-          videoPolicy: '動画本体は含めません。',
-          photoPolicy: '写真本体は含めません。',
+          ...payload,
+          ...createBackupEnvelope({
+            payload,
+            currentSchemaVersion: CURRENT_SCHEMA_VERSION,
+            exportedAt,
+            deviceType: 'unknown',
+          }),
         },
         null,
         2,
       );
     },
-    async importBackup() {
-      return { importedRows: 0, skippedTables: [] };
+    async importBackup(jsonText) {
+      const payload = parseBackupJson(jsonText);
+      validateBackupPayload(payload, CURRENT_SCHEMA_VERSION);
+      return {
+        importedRows: 0,
+        skippedTables: [],
+        addedRows: 0,
+        updatedRows: 0,
+        skippedRows: BACKUP_CONTRACT_VERSION === 2 ? 0 : 0,
+        errorRows: 0,
+      };
     },
   };
 

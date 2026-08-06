@@ -6,6 +6,13 @@ import {
   hashAssessmentRawText,
   parseChatGptAssessment,
 } from '../domain/assessment';
+import {
+  BACKUP_TABLES,
+  createBackupEnvelope,
+  parseBackupJson,
+  validateBackupPayload,
+  type BackupPayload,
+} from '../domain/backup';
 import type {
   AssessmentSections,
   ImprovementIssueStatus,
@@ -45,6 +52,7 @@ import {
   type DrillType,
   type TimePreset,
 } from '../domain/drills';
+import { CURRENT_SCHEMA_VERSION } from './schema';
 
 export const DEFAULT_ACCOUNT_ID = 'local-account';
 export const DEFAULT_PLAYER_ID = 'owner-player';
@@ -2692,69 +2700,39 @@ export function createSupportRepository(db: SQLiteDatabase) {
   }
 
   async function exportBackup(): Promise<string> {
-    const tables = [
-      'accounts',
-      'players',
-      'practice_menu_templates',
-      'daily_practice_plans',
-      'daily_practice_items',
-      'practice_sessions',
-      'practice_results',
-      'form_videos',
-      'ai_form_assessments',
-      'improvement_issues',
-      'improvement_issue_history',
-      'practice_recommendations',
-      'next_focus_items',
-      'player_skill_profiles',
-      'player_level_history',
-      'level_check_sessions',
-      'level_check_results',
-      'training_game_sessions',
-      'training_rounds',
-      'training_throws',
-      'board_calibrations',
-      'throw_photo_sessions',
-      'throw_detection_candidates',
-      'confirmed_throw_positions',
-      'training_drill_definitions',
-      'player_drill_preferences',
-      'daily_minimum_plans',
-      'daily_minimum_items',
-      'drill_sessions',
-      'drill_rounds',
-      'drill_throw_results',
-      'drill_results',
-      'drill_target_results',
-      'daily_minimum_completion',
-      'recommended_drills',
-    ];
     const payload: Record<string, unknown> = {
-      app: 'DartsSupportApp',
-      schemaVersion: 1,
-      exportedAt: nowIso(),
-      videoPolicy: '動画本体はバックアップ対象外です。form_videos.uri とメタデータのみを含みます。',
-      photoPolicy:
-        '写真本体はバックアップ対象外です。throw_photo_sessions.original_photo_uri と判定メタデータのみを含みます。',
+      ...createBackupEnvelope({
+        payload: {},
+        currentSchemaVersion: CURRENT_SCHEMA_VERSION,
+        exportedAt: nowIso(),
+        deviceType: 'iphone',
+      }),
     };
-    for (const table of tables) {
+    for (const table of BACKUP_TABLES) {
       payload[table] = await db.getAllAsync(`SELECT * FROM ${table}`);
     }
+    Object.assign(
+      payload,
+      createBackupEnvelope({
+        payload,
+        currentSchemaVersion: CURRENT_SCHEMA_VERSION,
+        exportedAt: String(payload.exported_at),
+        deviceType: 'iphone',
+      }),
+    );
     return JSON.stringify(payload, null, 2);
   }
 
-  async function importBackup(
-    jsonText: string,
-  ): Promise<{ importedRows: number; skippedTables: string[] }> {
-    const payload = JSON.parse(jsonText) as Record<string, unknown>;
-    if (payload.app !== 'DartsSupportApp') {
-      throw new Error('DartsSupportAppのバックアップJSONではありません。');
-    }
-    if (typeof payload.schemaVersion === 'number' && payload.schemaVersion > 1) {
-      throw new Error(
-        'このアプリより新しいバックアップ形式です。アプリ更新後に取り込んでください。',
-      );
-    }
+  async function importBackup(jsonText: string): Promise<{
+    importedRows: number;
+    skippedTables: string[];
+    addedRows: number;
+    updatedRows: number;
+    skippedRows: number;
+    errorRows: number;
+  }> {
+    const payload = parseBackupJson(jsonText) as BackupPayload;
+    validateBackupPayload(payload, CURRENT_SCHEMA_VERSION);
 
     const tableColumns: Record<string, string[]> = {
       accounts: ['id', 'display_name', 'status', 'created_at', 'updated_at', 'deleted_at'],
@@ -3399,6 +3377,8 @@ export function createSupportRepository(db: SQLiteDatabase) {
     };
 
     let importedRows = 0;
+    let skippedRows = 0;
+    let errorRows = 0;
     const skippedTables: string[] = [];
 
     await db.withTransactionAsync(async () => {
@@ -3417,17 +3397,38 @@ export function createSupportRepository(db: SQLiteDatabase) {
           if (insertColumns.length === 0) {
             continue;
           }
+          if (typeof record.id === 'string') {
+            const existing = await db.getFirstAsync<{ id: string }>(
+              `SELECT id FROM ${table} WHERE id = ? LIMIT 1`,
+              record.id,
+            );
+            if (existing) {
+              skippedRows += 1;
+              continue;
+            }
+          }
           const placeholders = insertColumns.map(() => '?').join(', ');
-          await db.runAsync(
-            `INSERT OR REPLACE INTO ${table}(${insertColumns.join(', ')}) VALUES (${placeholders})`,
-            ...insertColumns.map((column) => record[column] as SQLiteBindValue),
-          );
-          importedRows += 1;
+          try {
+            await db.runAsync(
+              `INSERT INTO ${table}(${insertColumns.join(', ')}) VALUES (${placeholders})`,
+              ...insertColumns.map((column) => record[column] as SQLiteBindValue),
+            );
+            importedRows += 1;
+          } catch {
+            errorRows += 1;
+          }
         }
       }
     });
 
-    return { importedRows, skippedTables };
+    return {
+      importedRows,
+      skippedTables,
+      addedRows: importedRows,
+      updatedRows: 0,
+      skippedRows,
+      errorRows,
+    };
   }
 
   return {

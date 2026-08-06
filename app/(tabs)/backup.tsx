@@ -62,7 +62,12 @@ export default function BackupScreen() {
             void repo
               .importBackup(backupText)
               .then((result) => {
-                Alert.alert('Importしました', `${result.importedRows}行を取り込みました。`);
+                Alert.alert(
+                  'Importしました',
+                  `追加 ${result.addedRows ?? result.importedRows} / 更新 ${result.updatedRows ?? 0} / スキップ ${
+                    result.skippedRows ?? 0
+                  }`,
+                );
               })
               .catch((error) => {
                 Alert.alert(
@@ -78,7 +83,7 @@ export default function BackupScreen() {
   }
 
   return (
-    <Page title="バックアップ" subtitle="端末内SQLiteデータをJSONでExport/Importします。">
+    <Page title="バックアップ" subtitle="iPhone記録をJSONでExportし、PC分析版へ取り込めます。">
       <KeyboardAvoidingView
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
         style={{ flex: 1 }}
@@ -90,8 +95,7 @@ export default function BackupScreen() {
           <Card>
             <Text style={{ color: theme.text, fontSize: 18, fontWeight: '800' }}>動画の扱い</Text>
             <Text style={{ color: theme.muted, marginTop: 6, lineHeight: 20 }}>
-              初期版のバックアップは動画本体を含めません。form_videos
-              のURI、撮影方向、メモなどのメタデータだけを保存します。写真判定も写真本体は含めず、URI、キャリブレーション、候補、確定座標だけを保存します。ドリル定義、デイリーミニマム、ドリル結果、おすすめ候補はJSONに含まれます。復元後に端末内ファイルが移動・削除されている場合は、動画や写真を再選択してください。
+              JSONには練習予定、セッション、結果、デイリーミニマム、ドリル定義、ドリルラウンド、1投データ、写真判定メタデータ、動画メタデータ、ChatGPT評価、改善課題、レベル履歴を含めます。動画・写真本体は含めず、PCでは開けない可能性があるファイルとして扱います。
             </Text>
           </Card>
           {__DEV__ ? (

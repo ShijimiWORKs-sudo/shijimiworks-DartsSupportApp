@@ -10,23 +10,20 @@ import {
   type ErrorInfo,
   type ReactNode,
 } from 'react';
-import { Platform, Text, View } from 'react-native';
+import { Text, View } from 'react-native';
 
 import {
   initializeSupportDatabase,
   SUPPORT_DATABASE_FILE_NAME,
   type SupportDatabase,
 } from '../../db/database';
-import { createMemorySupportRepository } from '../../db/memoryRepository';
 import { createSupportRepository, type SupportRepository } from '../../db/repository';
 import { Button } from '../../../components/ui';
-import { selectSupportRepositoryMode } from './repositoryMode';
 
 const SupportRepositoryContext = createContext<SupportRepository | null>(null);
 
 export function SupportDatabaseProvider({ children }: { children: ReactNode }) {
   const [retryKey, setRetryKey] = useState(0);
-  const repositoryMode = selectSupportRepositoryMode(Platform.OS);
   const handleInit = useCallback(async (db: SupportDatabase) => {
     await initializeSupportDatabase(db);
   }, []);
@@ -34,10 +31,6 @@ export function SupportDatabaseProvider({ children }: { children: ReactNode }) {
   const retry = useCallback(() => {
     setRetryKey((current) => current + 1);
   }, []);
-
-  if (repositoryMode === 'memory-web-preview') {
-    return <WebPreviewRepositoryProvider>{children}</WebPreviewRepositoryProvider>;
-  }
 
   return (
     <DatabaseErrorBoundary key={retryKey} onRetry={retry}>
@@ -85,15 +78,6 @@ class DatabaseErrorBoundary extends Component<
     }
     return this.props.children;
   }
-}
-
-function WebPreviewRepositoryProvider({ children }: { children: ReactNode }) {
-  const repository = useMemo(() => createMemorySupportRepository(), []);
-  return (
-    <SupportRepositoryContext.Provider value={repository}>
-      {children}
-    </SupportRepositoryContext.Provider>
-  );
 }
 
 function SupportRepositoryBridge({ children }: { children: ReactNode }) {
