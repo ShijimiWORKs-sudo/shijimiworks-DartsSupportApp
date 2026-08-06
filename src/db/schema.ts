@@ -1,5 +1,5 @@
 export const SUPPORT_DATABASE_FILE_NAME = 'darts_support.db';
-export const CURRENT_SCHEMA_VERSION = 2;
+export const CURRENT_SCHEMA_VERSION = 3;
 
 export const MIGRATION_001_INITIAL = `
 PRAGMA foreign_keys = ON;
@@ -482,6 +482,236 @@ CREATE TABLE IF NOT EXISTS confirmed_throw_positions (
 );
 `;
 
+export const MIGRATION_003_DAILY_DRILLS_TRAINING_LIBRARY = `
+PRAGMA foreign_keys = ON;
+
+CREATE TABLE IF NOT EXISTS training_drill_definitions (
+  id TEXT PRIMARY KEY NOT NULL,
+  drill_type TEXT NOT NULL,
+  category TEXT NOT NULL,
+  name TEXT NOT NULL,
+  purpose TEXT NOT NULL,
+  target_type TEXT,
+  target_numbers TEXT,
+  rounds INTEGER,
+  throws_per_round INTEGER,
+  total_throws INTEGER NOT NULL DEFAULT 0,
+  success_rule TEXT,
+  scoring_mode TEXT NOT NULL,
+  estimated_minutes INTEGER NOT NULL DEFAULT 0,
+  target_level_min TEXT NOT NULL DEFAULT 'C',
+  target_level_max TEXT NOT NULL DEFAULT 'SA',
+  is_daily_minimum INTEGER NOT NULL DEFAULT 0,
+  is_builtin INTEGER NOT NULL DEFAULT 0,
+  can_use_photo INTEGER NOT NULL DEFAULT 0,
+  can_use_video INTEGER NOT NULL DEFAULT 0,
+  difficulty INTEGER NOT NULL DEFAULT 1,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  is_hidden INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  deleted_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_training_drill_definitions_category
+ON training_drill_definitions(category, sort_order, name);
+
+CREATE TABLE IF NOT EXISTS player_drill_preferences (
+  id TEXT PRIMARY KEY NOT NULL,
+  account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  player_id TEXT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+  drill_definition_id TEXT NOT NULL REFERENCES training_drill_definitions(id) ON DELETE CASCADE,
+  is_favorite INTEGER NOT NULL DEFAULT 0,
+  is_hidden INTEGER NOT NULL DEFAULT 0,
+  custom_total_throws INTEGER,
+  custom_estimated_minutes INTEGER,
+  include_in_daily_minimum INTEGER,
+  updated_at TEXT NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_player_drill_preferences
+ON player_drill_preferences(account_id, player_id, drill_definition_id);
+
+CREATE TABLE IF NOT EXISTS daily_minimum_plans (
+  id TEXT PRIMARY KEY NOT NULL,
+  account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  player_id TEXT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+  practice_date TEXT NOT NULL,
+  level_snapshot TEXT NOT NULL,
+  target_minutes INTEGER NOT NULL,
+  status TEXT NOT NULL DEFAULT 'planned',
+  total_items INTEGER NOT NULL DEFAULT 0,
+  completed_items INTEGER NOT NULL DEFAULT 0,
+  total_throws INTEGER NOT NULL DEFAULT 0,
+  duration_seconds INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_daily_minimum_plan_date
+ON daily_minimum_plans(account_id, player_id, practice_date);
+
+CREATE TABLE IF NOT EXISTS daily_minimum_items (
+  id TEXT PRIMARY KEY NOT NULL,
+  account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  player_id TEXT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+  plan_id TEXT NOT NULL REFERENCES daily_minimum_plans(id) ON DELETE CASCADE,
+  drill_definition_id TEXT NOT NULL REFERENCES training_drill_definitions(id) ON DELETE CASCADE,
+  name_snapshot TEXT NOT NULL,
+  target_throws INTEGER NOT NULL DEFAULT 0,
+  estimated_minutes INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'planned',
+  actual_throws INTEGER NOT NULL DEFAULT 0,
+  duration_seconds INTEGER NOT NULL DEFAULT 0,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  source_reason TEXT,
+  started_at TEXT,
+  completed_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_daily_minimum_items_plan
+ON daily_minimum_items(plan_id, sort_order);
+
+CREATE TABLE IF NOT EXISTS drill_sessions (
+  id TEXT PRIMARY KEY NOT NULL,
+  account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  player_id TEXT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+  drill_definition_id TEXT NOT NULL REFERENCES training_drill_definitions(id) ON DELETE RESTRICT,
+  daily_minimum_item_id TEXT REFERENCES daily_minimum_items(id) ON DELETE SET NULL,
+  practice_session_id TEXT REFERENCES practice_sessions(id) ON DELETE SET NULL,
+  status TEXT NOT NULL DEFAULT 'in_progress',
+  current_round INTEGER NOT NULL DEFAULT 1,
+  current_throw INTEGER NOT NULL DEFAULT 0,
+  elapsed_seconds INTEGER NOT NULL DEFAULT 0,
+  target_number TEXT,
+  mode TEXT,
+  user_note TEXT,
+  undo_snapshot_json TEXT,
+  started_at TEXT NOT NULL,
+  paused_at TEXT,
+  completed_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  deleted_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_drill_sessions_player
+ON drill_sessions(account_id, player_id, status, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS drill_rounds (
+  id TEXT PRIMARY KEY NOT NULL,
+  account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  player_id TEXT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+  drill_session_id TEXT NOT NULL REFERENCES drill_sessions(id) ON DELETE CASCADE,
+  round_number INTEGER NOT NULL,
+  target_number TEXT,
+  throws INTEGER NOT NULL DEFAULT 0,
+  hit_count INTEGER NOT NULL DEFAULT 0,
+  mark_count INTEGER NOT NULL DEFAULT 0,
+  inner_bull INTEGER NOT NULL DEFAULT 0,
+  outer_bull INTEGER NOT NULL DEFAULT 0,
+  single_count INTEGER NOT NULL DEFAULT 0,
+  double_count INTEGER NOT NULL DEFAULT 0,
+  triple_count INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_drill_rounds_session_round
+ON drill_rounds(drill_session_id, round_number);
+
+CREATE TABLE IF NOT EXISTS drill_results (
+  id TEXT PRIMARY KEY NOT NULL,
+  account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  player_id TEXT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+  drill_session_id TEXT NOT NULL REFERENCES drill_sessions(id) ON DELETE CASCADE,
+  drill_definition_id TEXT NOT NULL REFERENCES training_drill_definitions(id) ON DELETE RESTRICT,
+  total_throws INTEGER NOT NULL DEFAULT 0,
+  hit_count INTEGER NOT NULL DEFAULT 0,
+  mark_count INTEGER NOT NULL DEFAULT 0,
+  success_rate REAL NOT NULL DEFAULT 0,
+  bull_rate REAL NOT NULL DEFAULT 0,
+  round_average REAL NOT NULL DEFAULT 0,
+  inner_bull INTEGER NOT NULL DEFAULT 0,
+  outer_bull INTEGER NOT NULL DEFAULT 0,
+  single_count INTEGER NOT NULL DEFAULT 0,
+  double_count INTEGER NOT NULL DEFAULT 0,
+  triple_count INTEGER NOT NULL DEFAULT 0,
+  zero_rounds INTEGER NOT NULL DEFAULT 0,
+  three_plus_mark_rounds INTEGER NOT NULL DEFAULT 0,
+  best_target TEXT,
+  weakest_target TEXT,
+  longest_streak INTEGER NOT NULL DEFAULT 0,
+  longest_miss_streak INTEGER NOT NULL DEFAULT 0,
+  grouping_radius REAL,
+  horizontal_spread REAL,
+  vertical_spread REAL,
+  fatigue_drop REAL,
+  feeling_label TEXT,
+  tension_label TEXT,
+  fatigue_label TEXT,
+  note TEXT,
+  summary_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_drill_results_session
+ON drill_results(drill_session_id);
+
+CREATE TABLE IF NOT EXISTS drill_target_results (
+  id TEXT PRIMARY KEY NOT NULL,
+  account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  player_id TEXT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+  drill_result_id TEXT NOT NULL REFERENCES drill_results(id) ON DELETE CASCADE,
+  target_number TEXT NOT NULL,
+  throws INTEGER NOT NULL DEFAULT 0,
+  hit_count INTEGER NOT NULL DEFAULT 0,
+  mark_count INTEGER NOT NULL DEFAULT 0,
+  success_rate REAL NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS daily_minimum_completion (
+  id TEXT PRIMARY KEY NOT NULL,
+  account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  player_id TEXT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+  practice_date TEXT NOT NULL,
+  completed_items INTEGER NOT NULL DEFAULT 0,
+  total_items INTEGER NOT NULL DEFAULT 0,
+  completion_rate REAL NOT NULL DEFAULT 0,
+  total_throws INTEGER NOT NULL DEFAULT 0,
+  duration_seconds INTEGER NOT NULL DEFAULT 0,
+  achieved INTEGER NOT NULL DEFAULT 0,
+  incomplete_items_json TEXT NOT NULL DEFAULT '[]',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_daily_minimum_completion_date
+ON daily_minimum_completion(account_id, player_id, practice_date);
+
+CREATE TABLE IF NOT EXISTS recommended_drills (
+  id TEXT PRIMARY KEY NOT NULL,
+  account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  player_id TEXT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+  drill_definition_id TEXT REFERENCES training_drill_definitions(id) ON DELETE SET NULL,
+  practice_date TEXT NOT NULL,
+  source_reason TEXT NOT NULL,
+  priority INTEGER NOT NULL DEFAULT 1,
+  status TEXT NOT NULL DEFAULT 'candidate',
+  time_preset TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  deleted_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_recommended_drills_date
+ON recommended_drills(account_id, player_id, practice_date, status, priority);
+`;
+
 export const MIGRATIONS = [
   {
     version: 1,
@@ -492,5 +722,10 @@ export const MIGRATIONS = [
     version: 2,
     name: '002_level_training_photo_scoring',
     sql: MIGRATION_002_LEVEL_TRAINING_PHOTO_SCORING,
+  },
+  {
+    version: 3,
+    name: '003_daily_drills_training_library',
+    sql: MIGRATION_003_DAILY_DRILLS_TRAINING_LIBRARY,
   },
 ] as const;

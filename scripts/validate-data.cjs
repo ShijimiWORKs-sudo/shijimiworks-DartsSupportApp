@@ -6,10 +6,11 @@ const path = require('node:path');
 const { MIGRATIONS, CURRENT_SCHEMA_VERSION } = require('../src/db/schema.ts');
 const { assessmentHeadingMap } = require('../src/domain/assessment.ts');
 
-assert.equal(CURRENT_SCHEMA_VERSION, 2);
-assert.equal(MIGRATIONS.length, 2);
+assert.equal(CURRENT_SCHEMA_VERSION, 3);
+assert.equal(MIGRATIONS.length, 3);
 assert.equal(MIGRATIONS[0].version, 1);
 assert.equal(MIGRATIONS[1].version, 2);
+assert.equal(MIGRATIONS[2].version, 3);
 
 const requiredTables = [
   'practice_menu_templates',
@@ -34,6 +35,16 @@ const requiredTables = [
   'throw_photo_sessions',
   'throw_detection_candidates',
   'confirmed_throw_positions',
+  'training_drill_definitions',
+  'player_drill_preferences',
+  'daily_minimum_plans',
+  'daily_minimum_items',
+  'drill_sessions',
+  'drill_rounds',
+  'drill_results',
+  'drill_target_results',
+  'daily_minimum_completion',
+  'recommended_drills',
 ];
 
 const allMigrationSql = MIGRATIONS.map((migration) => migration.sql).join('\n');
@@ -44,6 +55,8 @@ for (const table of requiredTables) {
 assert.equal(Object.keys(assessmentHeadingMap).length, 15);
 assert.match(MIGRATIONS[0].sql, /raw_hash TEXT NOT NULL/);
 assert.match(MIGRATIONS[0].sql, /uri TEXT NOT NULL/);
+assert.match(MIGRATIONS[2].sql, /is_builtin INTEGER NOT NULL DEFAULT 0/);
+assert.match(MIGRATIONS[2].sql, /source_reason TEXT NOT NULL/);
 
 const appJson = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'app.json'), 'utf8'));
 assert.match(appJson.expo.ios.infoPlist.NSPhotoLibraryUsageDescription, /投擲フォーム動画/);

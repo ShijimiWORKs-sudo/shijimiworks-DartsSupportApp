@@ -16,6 +16,12 @@ import type {
 import type {
   AssessmentRow,
   DailyPracticeItemRow,
+  DailyMinimumBundle,
+  DailyMinimumItemRow,
+  CreateCustomDrillInput,
+  DrillDefinitionRow,
+  DrillResultRow,
+  DrillSessionRow,
   FormVideoRow,
   ImprovementIssueRow,
   LevelHistoryRow,
@@ -23,6 +29,7 @@ import type {
   PracticeResultInput,
   PracticeSessionRow,
   RecommendationRow,
+  RecommendedDrillRow,
   SavePhotoSessionInput,
   SaveVideoInput,
   SkillProfileRow,
@@ -32,6 +39,17 @@ import type {
   TrainingGameSessionRow,
   TrainingThrowRow,
 } from './repository';
+import {
+  dailyMinimumForLevel,
+  findWeakCricketTarget,
+  generateTimePreset,
+  getBuiltInDrills,
+  summarizeDailyMinimum,
+  summarizeDrillResult,
+  type DrillCategory,
+  type DrillResultInput,
+  type TimePreset,
+} from '../domain/drills';
 import {
   TRAINING_GAMES,
   calculateLevelCheckScore,
@@ -128,6 +146,33 @@ export function createMemorySupportRepository(): SupportRepository {
   const trainingGames: TrainingGameSessionRow[] = [];
   const trainingThrows: TrainingThrowRow[] = [];
   const photoSessions: ThrowPhotoSessionRow[] = [];
+  const drillDefinitions: DrillDefinitionRow[] = getBuiltInDrills().map((drill) => ({
+    id: drill.id,
+    drill_type: drill.type,
+    category: drill.category,
+    name: drill.name,
+    purpose: drill.purpose,
+    target_numbers: JSON.stringify(drill.targetNumbers),
+    rounds: drill.rounds,
+    throws_per_round: drill.throwsPerRound,
+    total_throws: drill.totalThrows,
+    success_rule: drill.successRule,
+    scoring_mode: drill.scoringMode,
+    estimated_minutes: drill.estimatedMinutes,
+    target_level_min: drill.targetLevelMin,
+    target_level_max: drill.targetLevelMax,
+    is_daily_minimum: drill.isDailyMinimum ? 1 : 0,
+    is_builtin: 1,
+    can_use_photo: drill.canUsePhoto ? 1 : 0,
+    can_use_video: drill.canUseVideo ? 1 : 0,
+    difficulty: drill.difficulty,
+    sort_order: drill.sortOrder,
+    is_favorite: 0,
+  }));
+  const dailyMinimumPlans: DailyMinimumBundle[] = [];
+  const drillSessions: DrillSessionRow[] = [];
+  const drillResults: DrillResultRow[] = [];
+  const recommendedDrills: RecommendedDrillRow[] = [];
 
   const repo: SupportRepository = {
     async getOrCreatePlan() {
@@ -569,6 +614,266 @@ export function createMemorySupportRepository(): SupportRepository {
     async listThrowPhotoSessions() {
       return [...photoSessions];
     },
+    async listDrillDefinitions(category?: DrillCategory) {
+      return drillDefinitions
+        .filter((drill) => !category || drill.category === category)
+        .sort((a, b) => a.sort_order - b.sort_order);
+    },
+    async getOrCreateDailyMinimumPlan(date): Promise<DailyMinimumBundle> {
+      const existing = dailyMinimumPlans.find((plan) => plan.plan.practice_date === date);
+      if (existing) {
+        return existing;
+      }
+      const definitions = dailyMinimumForLevel(skillProfile.current_level);
+      const planId = id('dailymin');
+      const items: DailyMinimumItemRow[] = definitions.map((drill, index) => ({
+        id: id('dailyitem'),
+        plan_id: planId,
+        drill_definition_id: drill.id,
+        name_snapshot: drill.name,
+        target_throws: drill.totalThrows,
+        estimated_minutes: drill.estimatedMinutes,
+        status: 'planned',
+        actual_throws: 0,
+        duration_seconds: 0,
+        sort_order: index,
+        source_reason: `${skillProfile.current_level}レベルのデイリーミニマム`,
+      }));
+      const plan = {
+        id: planId,
+        practice_date: date,
+        level_snapshot: skillProfile.current_level,
+        target_minutes: definitions.reduce((sum, drill) => sum + drill.estimatedMinutes, 0),
+        status: 'planned',
+        total_items: items.length,
+        completed_items: 0,
+        total_throws: 0,
+        duration_seconds: 0,
+      };
+      const bundle: DailyMinimumBundle = {
+        plan,
+        items,
+        summary: summarizeDailyMinimum(
+          items.map((item) => ({
+            name: item.name_snapshot,
+            completed: item.status === 'completed',
+            totalThrows: item.actual_throws,
+            durationSeconds: item.duration_seconds,
+          })),
+        ),
+      };
+      dailyMinimumPlans.push(bundle);
+      return bundle;
+    },
+    async startDrillSession(drillDefinitionId, dailyMinimumItemId) {
+      const sessionId = id('drillsess');
+      drillSessions.unshift({
+        id: sessionId,
+        drill_definition_id: drillDefinitionId,
+        daily_minimum_item_id: dailyMinimumItemId ?? null,
+        status: 'in_progress',
+        current_round: 1,
+        current_throw: 0,
+        elapsed_seconds: 0,
+        target_number: null,
+        mode: null,
+        started_at: nowIso(),
+        paused_at: null,
+        completed_at: null,
+      });
+      for (const bundle of dailyMinimumPlans) {
+        const item = bundle.items.find((candidate) => candidate.id === dailyMinimumItemId);
+        if (item) {
+          item.status = 'in_progress';
+        }
+      }
+      return sessionId;
+    },
+    async updateDrillSessionProgress(
+      drillSessionId,
+      status,
+      currentRound,
+      currentThrow,
+      elapsedSeconds,
+    ) {
+      const session = drillSessions.find((candidate) => candidate.id === drillSessionId);
+      if (session) {
+        session.status = status;
+        session.current_round = currentRound;
+        session.current_throw = currentThrow;
+        session.elapsed_seconds = elapsedSeconds;
+        session.paused_at = status === 'paused' ? nowIso() : session.paused_at;
+        session.completed_at = status === 'completed' ? nowIso() : session.completed_at;
+      }
+    },
+    async saveDrillResult(drillSessionId, input: DrillResultInput) {
+      const session = drillSessions.find((candidate) => candidate.id === drillSessionId);
+      if (!session) {
+        throw new Error('ドリルセッションが見つかりません。');
+      }
+      const summary = summarizeDrillResult(input);
+      const existing = drillResults.find(
+        (candidate) => candidate.drill_session_id === drillSessionId,
+      );
+      const result: DrillResultRow = {
+        id: existing?.id ?? id('drillresult'),
+        drill_session_id: drillSessionId,
+        drill_definition_id: session.drill_definition_id,
+        total_throws: summary.totalThrows,
+        hit_count: summary.hitCount,
+        mark_count: summary.markCount,
+        success_rate: summary.successRate,
+        bull_rate: summary.bullRate,
+        round_average: summary.roundAverage,
+        best_target: summary.bestTarget,
+        weakest_target: summary.weakestTarget,
+        summary_json: JSON.stringify(summary),
+        created_at: nowIso(),
+      };
+      if (existing) {
+        Object.assign(existing, result);
+      } else {
+        drillResults.unshift(result);
+      }
+      session.status = 'completed';
+      session.completed_at = nowIso();
+      for (const bundle of dailyMinimumPlans) {
+        const item = bundle.items.find(
+          (candidate) => candidate.id === session.daily_minimum_item_id,
+        );
+        if (item) {
+          item.status = 'completed';
+          item.actual_throws = summary.totalThrows;
+          item.duration_seconds = input.durationSeconds ?? session.elapsed_seconds;
+          bundle.summary = summarizeDailyMinimum(
+            bundle.items.map((candidate) => ({
+              name: candidate.name_snapshot,
+              completed: candidate.status === 'completed',
+              totalThrows: candidate.actual_throws,
+              durationSeconds: candidate.duration_seconds,
+            })),
+          );
+        }
+      }
+    },
+    async listDrillSessions() {
+      return [...drillSessions];
+    },
+    async listDrillResults() {
+      return [...drillResults];
+    },
+    async generateRecommendedDrills(date, preset: TimePreset) {
+      const definitions = generateTimePreset(skillProfile.current_level, preset);
+      const weak = findWeakCricketTarget(
+        drillResults
+          .filter((result) => result.weakest_target)
+          .map((result) => ({
+            targetNumber: Number(result.weakest_target) || 'BULL',
+            averageMarks: result.round_average,
+            samples: 2,
+          })),
+      );
+      definitions.forEach((definition, index) => {
+        recommendedDrills.unshift({
+          id: id('recdrill'),
+          drill_definition_id: definition.id,
+          practice_date: date,
+          source_reason: `${skillProfile.current_level}レベルと${preset}分プリセットに基づく候補です。ユーザー確認まで予定には追加しません。`,
+          priority: index + 1,
+          status: 'candidate',
+          time_preset: preset,
+          name: definition.name,
+        });
+      });
+      recommendedDrills.unshift({
+        id: id('recdrill'),
+        drill_definition_id: 'weak_cricket_number',
+        practice_date: date,
+        source_reason: weak.reason,
+        priority: definitions.length + 1,
+        status: 'candidate',
+        time_preset: preset,
+        name: '苦手ナンバー集中',
+      });
+    },
+    async listRecommendedDrills(date) {
+      return recommendedDrills.filter((recommendation) => recommendation.practice_date === date);
+    },
+    async applyRecommendedDrill(recommendationId, date) {
+      const recommendation = recommendedDrills.find(
+        (candidate) => candidate.id === recommendationId,
+      );
+      if (!recommendation) {
+        return;
+      }
+      await repo.addPracticeMenu(
+        {
+          title: recommendation.name ?? 'おすすめドリル',
+          purpose: 'ドリルおすすめから追加',
+          targetArea: null,
+          rounds: null,
+          throwsPerRound: null,
+          sets: 1,
+          targetValue: null,
+          plannedMinutes: null,
+          restSeconds: null,
+          focusNote: recommendation.source_reason,
+          memo: 'ユーザー確認により今日の予定へ追加しました。',
+          sortOrder: 850,
+          isFavorite: false,
+          plannedDate: date,
+          repeatType: 'once',
+          repeatWeekdays: null,
+          isAiSuggested: false,
+          sourceAssessmentId: null,
+        },
+        false,
+      );
+      recommendation.status = 'added';
+    },
+    async createCustomDrill(input: CreateCustomDrillInput) {
+      const customId = id('customdrill');
+      drillDefinitions.push({
+        id: customId,
+        drill_type: 'custom',
+        category: input.category,
+        name: input.name,
+        purpose: input.purpose,
+        target_numbers: input.targetNumbers ?? null,
+        rounds: input.rounds ?? null,
+        throws_per_round: input.throwsPerRound ?? null,
+        total_throws: input.totalThrows ?? 0,
+        success_rule: input.successRule ?? null,
+        scoring_mode: input.scoringMode ?? 'hit',
+        estimated_minutes: input.estimatedMinutes ?? 10,
+        target_level_min: input.targetLevelMin ?? 'C',
+        target_level_max: input.targetLevelMax ?? 'SA',
+        is_daily_minimum: input.isDailyMinimum ? 1 : 0,
+        is_builtin: 0,
+        can_use_photo: input.canUsePhoto ? 1 : 0,
+        can_use_video: input.canUseVideo ? 1 : 0,
+        difficulty: 5,
+        sort_order: 999,
+        is_favorite: input.isFavorite ? 1 : 0,
+      });
+      return customId;
+    },
+    async updateDrillFavorite(drillDefinitionId, favorite) {
+      const definition = drillDefinitions.find((candidate) => candidate.id === drillDefinitionId);
+      if (definition) {
+        definition.is_favorite = favorite ? 1 : 0;
+      }
+    },
+    async hideDrillDefinition(drillDefinitionId) {
+      const definition = drillDefinitions.find((candidate) => candidate.id === drillDefinitionId);
+      if (definition?.is_builtin) {
+        throw new Error('ビルトイン練習は削除できません。');
+      }
+      const index = drillDefinitions.findIndex((candidate) => candidate.id === drillDefinitionId);
+      if (index >= 0) {
+        drillDefinitions.splice(index, 1);
+      }
+    },
     async exportBackup() {
       return JSON.stringify(
         {
@@ -588,6 +893,12 @@ export function createMemorySupportRepository(): SupportRepository {
           training_game_sessions: trainingGames,
           training_throws: trainingThrows,
           throw_photo_sessions: photoSessions,
+          training_drill_definitions: drillDefinitions,
+          daily_minimum_plans: dailyMinimumPlans.map((bundle) => bundle.plan),
+          daily_minimum_items: dailyMinimumPlans.flatMap((bundle) => bundle.items),
+          drill_sessions: drillSessions,
+          drill_results: drillResults,
+          recommended_drills: recommendedDrills,
           videoPolicy: '動画本体は含めません。',
           photoPolicy: '写真本体は含めません。',
         },

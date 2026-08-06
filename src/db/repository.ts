@@ -31,6 +31,18 @@ import {
   type TrainingGameType,
   type TrainingThrowInput,
 } from '../domain/training';
+import {
+  dailyMinimumForLevel,
+  findWeakCricketTarget,
+  generateTimePreset,
+  summarizeDailyMinimum,
+  summarizeDrillResult,
+  type DrillCategory,
+  type DrillDefinition,
+  type DrillResultInput,
+  type DrillType,
+  type TimePreset,
+} from '../domain/drills';
 
 export const DEFAULT_ACCOUNT_ID = 'local-account';
 export const DEFAULT_PLAYER_ID = 'owner-player';
@@ -246,6 +258,125 @@ export type SavePhotoSessionInput = {
   autoCandidates: ThrowPosition[];
   confirmedPositions: ThrowPosition[];
   hasManualAdjustment: boolean;
+};
+
+export type DrillDefinitionRow = {
+  id: string;
+  drill_type: DrillType;
+  category: DrillCategory;
+  name: string;
+  purpose: string;
+  target_numbers: string | null;
+  rounds: number | null;
+  throws_per_round: number | null;
+  total_throws: number;
+  success_rule: string | null;
+  scoring_mode: string;
+  estimated_minutes: number;
+  target_level_min: PlayerLevel;
+  target_level_max: PlayerLevel;
+  is_daily_minimum: number;
+  is_builtin: number;
+  can_use_photo: number;
+  can_use_video: number;
+  difficulty: number;
+  sort_order: number;
+  is_favorite?: number;
+  source_reason?: string | null;
+};
+
+export type DailyMinimumPlanRow = {
+  id: string;
+  practice_date: string;
+  level_snapshot: PlayerLevel;
+  target_minutes: number;
+  status: string;
+  total_items: number;
+  completed_items: number;
+  total_throws: number;
+  duration_seconds: number;
+};
+
+export type DailyMinimumItemRow = {
+  id: string;
+  plan_id: string;
+  drill_definition_id: string;
+  name_snapshot: string;
+  target_throws: number;
+  estimated_minutes: number;
+  status: string;
+  actual_throws: number;
+  duration_seconds: number;
+  sort_order: number;
+  source_reason: string | null;
+};
+
+export type DrillSessionRow = {
+  id: string;
+  drill_definition_id: string;
+  daily_minimum_item_id: string | null;
+  status: string;
+  current_round: number;
+  current_throw: number;
+  elapsed_seconds: number;
+  target_number: string | null;
+  mode: string | null;
+  started_at: string;
+  paused_at: string | null;
+  completed_at: string | null;
+};
+
+export type DrillResultRow = {
+  id: string;
+  drill_session_id: string;
+  drill_definition_id: string;
+  total_throws: number;
+  hit_count: number;
+  mark_count: number;
+  success_rate: number;
+  bull_rate: number;
+  round_average: number;
+  best_target: string | null;
+  weakest_target: string | null;
+  summary_json: string;
+  created_at: string;
+};
+
+export type RecommendedDrillRow = {
+  id: string;
+  drill_definition_id: string | null;
+  practice_date: string;
+  source_reason: string;
+  priority: number;
+  status: string;
+  time_preset: string | null;
+  name?: string;
+};
+
+export type DailyMinimumBundle = {
+  plan: DailyMinimumPlanRow;
+  items: DailyMinimumItemRow[];
+  summary: ReturnType<typeof summarizeDailyMinimum>;
+};
+
+export type CreateCustomDrillInput = {
+  name: string;
+  purpose: string;
+  category: DrillCategory;
+  targetNumbers?: string;
+  rounds?: number | null;
+  throwsPerRound?: number | null;
+  totalThrows?: number | null;
+  successRule?: string | null;
+  scoringMode?: string;
+  estimatedMinutes?: number | null;
+  targetLevelMin?: PlayerLevel;
+  targetLevelMax?: PlayerLevel;
+  isDailyMinimum?: boolean;
+  isFavorite?: boolean;
+  canUsePhoto?: boolean;
+  canUseVideo?: boolean;
+  memo?: string | null;
 };
 
 function nowIso(): string {
@@ -1485,6 +1616,597 @@ export function createSupportRepository(db: SQLiteDatabase) {
     );
   }
 
+  async function listDrillDefinitions(category?: DrillCategory): Promise<DrillDefinitionRow[]> {
+    const rows = await db.getAllAsync<DrillDefinitionRow>(
+      `SELECT tdd.*, COALESCE(pdp.is_favorite, 0) AS is_favorite
+       FROM training_drill_definitions tdd
+       LEFT JOIN player_drill_preferences pdp
+         ON pdp.drill_definition_id = tdd.id
+        AND pdp.account_id = ?
+        AND pdp.player_id = ?
+       WHERE tdd.deleted_at IS NULL
+         AND tdd.is_hidden = 0
+         AND COALESCE(pdp.is_hidden, 0) = 0
+         ${category ? 'AND tdd.category = ?' : ''}
+       ORDER BY tdd.category, COALESCE(pdp.is_favorite, 0) DESC, tdd.sort_order, tdd.name`,
+      ...(category
+        ? [DEFAULT_ACCOUNT_ID, DEFAULT_PLAYER_ID, category]
+        : [DEFAULT_ACCOUNT_ID, DEFAULT_PLAYER_ID]),
+    );
+    return rows;
+  }
+
+  async function getOrCreateDailyMinimumPlan(date: string): Promise<DailyMinimumBundle> {
+    const profile = await getSkillProfile();
+    const timestamp = nowIso();
+    let plan = await db.getFirstAsync<DailyMinimumPlanRow>(
+      `SELECT * FROM daily_minimum_plans WHERE account_id = ? AND player_id = ? AND practice_date = ?`,
+      DEFAULT_ACCOUNT_ID,
+      DEFAULT_PLAYER_ID,
+      date,
+    );
+    if (!plan) {
+      const planId = id('dailymin');
+      const definitions = dailyMinimumForLevel(profile.current_level);
+      const targetMinutes = definitions.reduce((sum, drill) => sum + drill.estimatedMinutes, 0);
+      await db.withTransactionAsync(async () => {
+        await db.runAsync(
+          `INSERT INTO daily_minimum_plans(
+            id, account_id, player_id, practice_date, level_snapshot, target_minutes,
+            total_items, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          planId,
+          DEFAULT_ACCOUNT_ID,
+          DEFAULT_PLAYER_ID,
+          date,
+          profile.current_level,
+          targetMinutes,
+          definitions.length,
+          timestamp,
+          timestamp,
+        );
+        for (let index = 0; index < definitions.length; index += 1) {
+          const drill = definitions[index];
+          if (!drill) {
+            continue;
+          }
+          await db.runAsync(
+            `INSERT OR IGNORE INTO daily_minimum_items(
+              id, account_id, player_id, plan_id, drill_definition_id, name_snapshot,
+              target_throws, estimated_minutes, sort_order, source_reason, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            id('dailyitem'),
+            DEFAULT_ACCOUNT_ID,
+            DEFAULT_PLAYER_ID,
+            planId,
+            drill.id,
+            drill.name,
+            drill.totalThrows,
+            drill.estimatedMinutes,
+            index,
+            `${profile.current_level}レベルのデイリーミニマム`,
+            timestamp,
+            timestamp,
+          );
+        }
+      });
+      plan = (await db.getFirstAsync<DailyMinimumPlanRow>(
+        `SELECT * FROM daily_minimum_plans WHERE id = ?`,
+        planId,
+      )) as DailyMinimumPlanRow;
+    }
+    const items = await listDailyMinimumItems(plan.id);
+    return { plan, items, summary: await buildDailyMinimumSummary(plan, items) };
+  }
+
+  async function listDailyMinimumItems(planId: string): Promise<DailyMinimumItemRow[]> {
+    return db.getAllAsync<DailyMinimumItemRow>(
+      `SELECT * FROM daily_minimum_items
+       WHERE account_id = ? AND player_id = ? AND plan_id = ?
+       ORDER BY sort_order, created_at`,
+      DEFAULT_ACCOUNT_ID,
+      DEFAULT_PLAYER_ID,
+      planId,
+    );
+  }
+
+  async function buildDailyMinimumSummary(
+    plan: DailyMinimumPlanRow,
+    items: DailyMinimumItemRow[],
+  ): Promise<DailyMinimumBundle['summary']> {
+    const history = await db.getAllAsync<{ practice_date: string; achieved: number }>(
+      `SELECT practice_date, achieved FROM daily_minimum_completion
+       WHERE account_id = ? AND player_id = ?
+       ORDER BY practice_date DESC LIMIT 14`,
+      DEFAULT_ACCOUNT_ID,
+      DEFAULT_PLAYER_ID,
+    );
+    return summarizeDailyMinimum(
+      items.map((item) => ({
+        name: item.name_snapshot,
+        completed: item.status === 'completed',
+        totalThrows: item.actual_throws,
+        durationSeconds: item.duration_seconds,
+      })),
+      history.map((entry) => ({ date: entry.practice_date, achieved: fromDbBool(entry.achieved) })),
+    );
+  }
+
+  async function startDrillSession(
+    drillDefinitionId: string,
+    dailyMinimumItemId?: string | null,
+  ): Promise<string> {
+    const definition = await db.getFirstAsync<{ id: string }>(
+      `SELECT id FROM training_drill_definitions WHERE id = ? AND deleted_at IS NULL`,
+      drillDefinitionId,
+    );
+    if (!definition) {
+      throw new Error('ドリルが見つかりません。');
+    }
+    const existing = dailyMinimumItemId
+      ? await db.getFirstAsync<{ id: string }>(
+          `SELECT id FROM drill_sessions
+           WHERE daily_minimum_item_id = ? AND deleted_at IS NULL
+           ORDER BY updated_at DESC LIMIT 1`,
+          dailyMinimumItemId,
+        )
+      : null;
+    const timestamp = nowIso();
+    if (existing) {
+      await db.runAsync(
+        `UPDATE drill_sessions SET status = 'in_progress', paused_at = NULL, updated_at = ? WHERE id = ?`,
+        timestamp,
+        existing.id,
+      );
+      return existing.id;
+    }
+    const sessionId = id('drillsess');
+    await db.withTransactionAsync(async () => {
+      await db.runAsync(
+        `INSERT INTO drill_sessions(
+          id, account_id, player_id, drill_definition_id, daily_minimum_item_id,
+          status, started_at, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, 'in_progress', ?, ?, ?)`,
+        sessionId,
+        DEFAULT_ACCOUNT_ID,
+        DEFAULT_PLAYER_ID,
+        drillDefinitionId,
+        dailyMinimumItemId ?? null,
+        timestamp,
+        timestamp,
+        timestamp,
+      );
+      if (dailyMinimumItemId) {
+        await db.runAsync(
+          `UPDATE daily_minimum_items
+           SET status = 'in_progress', started_at = COALESCE(started_at, ?), updated_at = ?
+           WHERE id = ?`,
+          timestamp,
+          timestamp,
+          dailyMinimumItemId,
+        );
+      }
+    });
+    return sessionId;
+  }
+
+  async function updateDrillSessionProgress(
+    drillSessionId: string,
+    status: 'in_progress' | 'paused' | 'completed' | 'aborted',
+    currentRound: number,
+    currentThrow: number,
+    elapsedSeconds: number,
+  ): Promise<void> {
+    await db.runAsync(
+      `UPDATE drill_sessions
+       SET status = ?, current_round = ?, current_throw = ?, elapsed_seconds = ?,
+           paused_at = CASE WHEN ? = 'paused' THEN ? ELSE paused_at END,
+           completed_at = CASE WHEN ? = 'completed' THEN ? ELSE completed_at END,
+           updated_at = ?
+       WHERE id = ? AND account_id = ? AND player_id = ?`,
+      status,
+      currentRound,
+      currentThrow,
+      elapsedSeconds,
+      status,
+      nowIso(),
+      status,
+      nowIso(),
+      nowIso(),
+      drillSessionId,
+      DEFAULT_ACCOUNT_ID,
+      DEFAULT_PLAYER_ID,
+    );
+  }
+
+  async function saveDrillResult(
+    drillSessionId: string,
+    input: DrillResultInput & {
+      feelingLabel?: string | null;
+      tensionLabel?: string | null;
+      fatigueLabel?: string | null;
+      note?: string | null;
+    },
+  ): Promise<void> {
+    const session = await db.getFirstAsync<DrillSessionRow>(
+      `SELECT * FROM drill_sessions WHERE id = ? AND account_id = ? AND player_id = ?`,
+      drillSessionId,
+      DEFAULT_ACCOUNT_ID,
+      DEFAULT_PLAYER_ID,
+    );
+    if (!session) {
+      throw new Error('ドリルセッションが見つかりません。');
+    }
+    const summary = summarizeDrillResult(input);
+    const timestamp = nowIso();
+    await db.withTransactionAsync(async () => {
+      await db.runAsync(
+        `INSERT INTO drill_results(
+          id, account_id, player_id, drill_session_id, drill_definition_id, total_throws,
+          hit_count, mark_count, success_rate, bull_rate, round_average, inner_bull,
+          outer_bull, single_count, double_count, triple_count, zero_rounds,
+          three_plus_mark_rounds, best_target, weakest_target, longest_streak,
+          longest_miss_streak, grouping_radius, horizontal_spread, vertical_spread,
+          fatigue_drop, feeling_label, tension_label, fatigue_label, note, summary_json,
+          created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(drill_session_id) DO UPDATE SET
+          total_throws = excluded.total_throws,
+          hit_count = excluded.hit_count,
+          mark_count = excluded.mark_count,
+          success_rate = excluded.success_rate,
+          bull_rate = excluded.bull_rate,
+          round_average = excluded.round_average,
+          inner_bull = excluded.inner_bull,
+          outer_bull = excluded.outer_bull,
+          single_count = excluded.single_count,
+          double_count = excluded.double_count,
+          triple_count = excluded.triple_count,
+          zero_rounds = excluded.zero_rounds,
+          three_plus_mark_rounds = excluded.three_plus_mark_rounds,
+          best_target = excluded.best_target,
+          weakest_target = excluded.weakest_target,
+          longest_streak = excluded.longest_streak,
+          longest_miss_streak = excluded.longest_miss_streak,
+          grouping_radius = excluded.grouping_radius,
+          horizontal_spread = excluded.horizontal_spread,
+          vertical_spread = excluded.vertical_spread,
+          fatigue_drop = excluded.fatigue_drop,
+          feeling_label = excluded.feeling_label,
+          tension_label = excluded.tension_label,
+          fatigue_label = excluded.fatigue_label,
+          note = excluded.note,
+          summary_json = excluded.summary_json,
+          updated_at = excluded.updated_at`,
+        id('drillresult'),
+        DEFAULT_ACCOUNT_ID,
+        DEFAULT_PLAYER_ID,
+        drillSessionId,
+        session.drill_definition_id,
+        summary.totalThrows,
+        summary.hitCount,
+        summary.markCount,
+        summary.successRate,
+        summary.bullRate,
+        summary.roundAverage,
+        input.innerBull ?? 0,
+        input.outerBull ?? 0,
+        input.singleCount ?? 0,
+        input.doubleCount ?? 0,
+        input.tripleCount ?? 0,
+        summary.zeroRounds,
+        summary.threePlusMarkRounds,
+        summary.bestTarget,
+        summary.weakestTarget,
+        summary.longestStreak,
+        summary.longestMissStreak,
+        summary.groupingRadius,
+        summary.horizontalSpread,
+        summary.verticalSpread,
+        summary.fatigueDrop,
+        optionalText(input.feelingLabel),
+        optionalText(input.tensionLabel),
+        optionalText(input.fatigueLabel),
+        optionalText(input.note),
+        JSON.stringify(summary),
+        timestamp,
+        timestamp,
+      );
+      await db.runAsync(
+        `UPDATE drill_sessions SET status = 'completed', completed_at = ?, updated_at = ? WHERE id = ?`,
+        timestamp,
+        timestamp,
+        drillSessionId,
+      );
+      if (session.daily_minimum_item_id) {
+        await db.runAsync(
+          `UPDATE daily_minimum_items
+           SET status = 'completed', actual_throws = ?, duration_seconds = ?,
+               completed_at = ?, updated_at = ?
+           WHERE id = ?`,
+          summary.totalThrows,
+          input.durationSeconds ?? session.elapsed_seconds,
+          timestamp,
+          timestamp,
+          session.daily_minimum_item_id,
+        );
+        await refreshDailyMinimumCompletion(session.daily_minimum_item_id);
+      }
+    });
+  }
+
+  async function refreshDailyMinimumCompletion(itemId: string): Promise<void> {
+    const item = await db.getFirstAsync<{ plan_id: string }>(
+      `SELECT plan_id FROM daily_minimum_items WHERE id = ?`,
+      itemId,
+    );
+    if (!item) {
+      return;
+    }
+    const plan = await db.getFirstAsync<DailyMinimumPlanRow>(
+      `SELECT * FROM daily_minimum_plans WHERE id = ?`,
+      item.plan_id,
+    );
+    if (!plan) {
+      return;
+    }
+    const items = await listDailyMinimumItems(plan.id);
+    const summary = await buildDailyMinimumSummary(plan, items);
+    const timestamp = nowIso();
+    await db.runAsync(
+      `UPDATE daily_minimum_plans
+       SET completed_items = ?, total_items = ?, total_throws = ?, duration_seconds = ?,
+           status = ?, updated_at = ?
+       WHERE id = ?`,
+      summary.completedItems,
+      summary.totalItems,
+      summary.totalThrows,
+      summary.durationSeconds,
+      summary.completedItems === summary.totalItems ? 'completed' : 'partial',
+      timestamp,
+      plan.id,
+    );
+    await db.runAsync(
+      `INSERT INTO daily_minimum_completion(
+        id, account_id, player_id, practice_date, completed_items, total_items,
+        completion_rate, total_throws, duration_seconds, achieved, incomplete_items_json,
+        created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(account_id, player_id, practice_date) DO UPDATE SET
+        completed_items = excluded.completed_items,
+        total_items = excluded.total_items,
+        completion_rate = excluded.completion_rate,
+        total_throws = excluded.total_throws,
+        duration_seconds = excluded.duration_seconds,
+        achieved = excluded.achieved,
+        incomplete_items_json = excluded.incomplete_items_json,
+        updated_at = excluded.updated_at`,
+      id('dailycomp'),
+      DEFAULT_ACCOUNT_ID,
+      DEFAULT_PLAYER_ID,
+      plan.practice_date,
+      summary.completedItems,
+      summary.totalItems,
+      summary.completionRate,
+      summary.totalThrows,
+      summary.durationSeconds,
+      toDbBool(summary.completedItems === summary.totalItems),
+      JSON.stringify(summary.incompleteNames),
+      timestamp,
+      timestamp,
+    );
+  }
+
+  async function listDrillSessions(): Promise<DrillSessionRow[]> {
+    return db.getAllAsync<DrillSessionRow>(
+      `SELECT * FROM drill_sessions
+       WHERE account_id = ? AND player_id = ? AND deleted_at IS NULL
+       ORDER BY updated_at DESC LIMIT 50`,
+      DEFAULT_ACCOUNT_ID,
+      DEFAULT_PLAYER_ID,
+    );
+  }
+
+  async function listDrillResults(): Promise<DrillResultRow[]> {
+    return db.getAllAsync<DrillResultRow>(
+      `SELECT * FROM drill_results
+       WHERE account_id = ? AND player_id = ?
+       ORDER BY created_at DESC LIMIT 80`,
+      DEFAULT_ACCOUNT_ID,
+      DEFAULT_PLAYER_ID,
+    );
+  }
+
+  async function generateRecommendedDrills(date: string, preset: TimePreset): Promise<void> {
+    const profile = await getSkillProfile();
+    const definitions = generateTimePreset(profile.current_level, preset);
+    const results = await db.getAllAsync<{
+      weakest_target: string | null;
+      round_average: number;
+      drill_definition_id: string;
+    }>(
+      `SELECT weakest_target, round_average, drill_definition_id
+       FROM drill_results
+       WHERE account_id = ? AND player_id = ?
+       ORDER BY created_at DESC LIMIT 30`,
+      DEFAULT_ACCOUNT_ID,
+      DEFAULT_PLAYER_ID,
+    );
+    const weak = findWeakCricketTarget(
+      results
+        .filter((row) => row.weakest_target)
+        .map((row) => ({
+          targetNumber: Number(row.weakest_target) || 'BULL',
+          averageMarks: row.round_average,
+          samples: 2,
+        })),
+    );
+    const timestamp = nowIso();
+    await db.withTransactionAsync(async () => {
+      let priority = 1;
+      for (const definition of definitions) {
+        await db.runAsync(
+          `INSERT INTO recommended_drills(
+            id, account_id, player_id, drill_definition_id, practice_date, source_reason,
+            priority, status, time_preset, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, 'candidate', ?, ?, ?)`,
+          id('recdrill'),
+          DEFAULT_ACCOUNT_ID,
+          DEFAULT_PLAYER_ID,
+          definition.id,
+          date,
+          `${profile.current_level}レベルと${preset}分プリセットに基づく候補です。ユーザー確認まで予定には追加しません。`,
+          priority,
+          preset,
+          timestamp,
+          timestamp,
+        );
+        priority += 1;
+      }
+      await db.runAsync(
+        `INSERT INTO recommended_drills(
+          id, account_id, player_id, drill_definition_id, practice_date, source_reason,
+          priority, status, time_preset, created_at, updated_at
+        ) VALUES (?, ?, ?, 'weak_cricket_number', ?, ?, ?, 'candidate', ?, ?, ?)`,
+        id('recdrill'),
+        DEFAULT_ACCOUNT_ID,
+        DEFAULT_PLAYER_ID,
+        date,
+        weak.reason,
+        priority,
+        preset,
+        timestamp,
+        timestamp,
+      );
+    });
+  }
+
+  async function listRecommendedDrills(date: string): Promise<RecommendedDrillRow[]> {
+    return db.getAllAsync<RecommendedDrillRow>(
+      `SELECT rd.*, tdd.name
+       FROM recommended_drills rd
+       LEFT JOIN training_drill_definitions tdd ON tdd.id = rd.drill_definition_id
+       WHERE rd.account_id = ? AND rd.player_id = ? AND rd.practice_date = ? AND rd.deleted_at IS NULL
+       ORDER BY rd.status, rd.priority, rd.created_at DESC`,
+      DEFAULT_ACCOUNT_ID,
+      DEFAULT_PLAYER_ID,
+      date,
+    );
+  }
+
+  async function applyRecommendedDrill(recommendationId: string, date: string): Promise<void> {
+    const recommendation = await db.getFirstAsync<RecommendedDrillRow & { name: string }>(
+      `SELECT rd.*, tdd.name
+       FROM recommended_drills rd
+       JOIN training_drill_definitions tdd ON tdd.id = rd.drill_definition_id
+       WHERE rd.id = ? AND rd.account_id = ? AND rd.player_id = ?`,
+      recommendationId,
+      DEFAULT_ACCOUNT_ID,
+      DEFAULT_PLAYER_ID,
+    );
+    if (!recommendation) {
+      throw new Error('おすすめが見つかりません。');
+    }
+    await addPracticeMenu(
+      {
+        title: recommendation.name,
+        purpose: 'ドリルおすすめから追加',
+        targetArea: null,
+        rounds: null,
+        throwsPerRound: null,
+        sets: 1,
+        targetValue: null,
+        plannedMinutes: null,
+        restSeconds: null,
+        focusNote: recommendation.source_reason,
+        memo: 'ユーザー確認により今日の予定へ追加しました。',
+        sortOrder: 850,
+        isFavorite: false,
+        plannedDate: date,
+        repeatType: 'once',
+        repeatWeekdays: null,
+        isAiSuggested: false,
+        sourceAssessmentId: null,
+      },
+      false,
+    );
+    await db.runAsync(
+      `UPDATE recommended_drills SET status = 'added', updated_at = ? WHERE id = ?`,
+      nowIso(),
+      recommendationId,
+    );
+  }
+
+  async function createCustomDrill(input: CreateCustomDrillInput): Promise<string> {
+    const customId = id('customdrill');
+    const timestamp = nowIso();
+    await db.withTransactionAsync(async () => {
+      await db.runAsync(
+        `INSERT INTO training_drill_definitions(
+          id, drill_type, category, name, purpose, target_type, target_numbers, rounds,
+          throws_per_round, total_throws, success_rule, scoring_mode, estimated_minutes,
+          target_level_min, target_level_max, is_daily_minimum, is_builtin, can_use_photo,
+          can_use_video, difficulty, sort_order, created_at, updated_at
+        ) VALUES (?, 'custom', ?, ?, ?, 'custom', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, 5, 999, ?, ?)`,
+        customId,
+        input.category,
+        input.name.trim(),
+        input.purpose.trim(),
+        input.targetNumbers ?? null,
+        input.rounds ?? null,
+        input.throwsPerRound ?? null,
+        input.totalThrows ?? 0,
+        input.successRule ?? null,
+        input.scoringMode ?? 'hit',
+        input.estimatedMinutes ?? 10,
+        input.targetLevelMin ?? 'C',
+        input.targetLevelMax ?? 'SA',
+        toDbBool(input.isDailyMinimum ?? false),
+        toDbBool(input.canUsePhoto ?? false),
+        toDbBool(input.canUseVideo ?? false),
+        timestamp,
+        timestamp,
+      );
+      if (input.isFavorite) {
+        await updateDrillFavorite(customId, true);
+      }
+    });
+    return customId;
+  }
+
+  async function updateDrillFavorite(drillDefinitionId: string, favorite: boolean): Promise<void> {
+    await db.runAsync(
+      `INSERT INTO player_drill_preferences(
+        id, account_id, player_id, drill_definition_id, is_favorite, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(account_id, player_id, drill_definition_id) DO UPDATE SET
+        is_favorite = excluded.is_favorite,
+        updated_at = excluded.updated_at`,
+      id('drillpref'),
+      DEFAULT_ACCOUNT_ID,
+      DEFAULT_PLAYER_ID,
+      drillDefinitionId,
+      toDbBool(favorite),
+      nowIso(),
+    );
+  }
+
+  async function hideDrillDefinition(drillDefinitionId: string): Promise<void> {
+    const definition = await db.getFirstAsync<{ is_builtin: number }>(
+      `SELECT is_builtin FROM training_drill_definitions WHERE id = ?`,
+      drillDefinitionId,
+    );
+    if (definition?.is_builtin) {
+      throw new Error('ビルトイン練習は削除できません。非表示または複製で調整してください。');
+    }
+    await db.runAsync(
+      `UPDATE training_drill_definitions SET deleted_at = ?, updated_at = ? WHERE id = ?`,
+      nowIso(),
+      nowIso(),
+      drillDefinitionId,
+    );
+  }
+
   async function exportBackup(): Promise<string> {
     const tables = [
       'accounts',
@@ -1511,6 +2233,16 @@ export function createSupportRepository(db: SQLiteDatabase) {
       'throw_photo_sessions',
       'throw_detection_candidates',
       'confirmed_throw_positions',
+      'training_drill_definitions',
+      'player_drill_preferences',
+      'daily_minimum_plans',
+      'daily_minimum_items',
+      'drill_sessions',
+      'drill_rounds',
+      'drill_results',
+      'drill_target_results',
+      'daily_minimum_completion',
+      'recommended_drills',
     ];
     const payload: Record<string, unknown> = {
       app: 'DartsSupportApp',
@@ -1934,6 +2666,195 @@ export function createSupportRepository(db: SQLiteDatabase) {
         'input_method',
         'created_at',
       ],
+      training_drill_definitions: [
+        'id',
+        'drill_type',
+        'category',
+        'name',
+        'purpose',
+        'target_type',
+        'target_numbers',
+        'rounds',
+        'throws_per_round',
+        'total_throws',
+        'success_rule',
+        'scoring_mode',
+        'estimated_minutes',
+        'target_level_min',
+        'target_level_max',
+        'is_daily_minimum',
+        'is_builtin',
+        'can_use_photo',
+        'can_use_video',
+        'difficulty',
+        'sort_order',
+        'is_hidden',
+        'created_at',
+        'updated_at',
+        'deleted_at',
+      ],
+      player_drill_preferences: [
+        'id',
+        'account_id',
+        'player_id',
+        'drill_definition_id',
+        'is_favorite',
+        'is_hidden',
+        'custom_total_throws',
+        'custom_estimated_minutes',
+        'include_in_daily_minimum',
+        'updated_at',
+      ],
+      daily_minimum_plans: [
+        'id',
+        'account_id',
+        'player_id',
+        'practice_date',
+        'level_snapshot',
+        'target_minutes',
+        'status',
+        'total_items',
+        'completed_items',
+        'total_throws',
+        'duration_seconds',
+        'created_at',
+        'updated_at',
+      ],
+      daily_minimum_items: [
+        'id',
+        'account_id',
+        'player_id',
+        'plan_id',
+        'drill_definition_id',
+        'name_snapshot',
+        'target_throws',
+        'estimated_minutes',
+        'status',
+        'actual_throws',
+        'duration_seconds',
+        'sort_order',
+        'source_reason',
+        'started_at',
+        'completed_at',
+        'created_at',
+        'updated_at',
+      ],
+      drill_sessions: [
+        'id',
+        'account_id',
+        'player_id',
+        'drill_definition_id',
+        'daily_minimum_item_id',
+        'practice_session_id',
+        'status',
+        'current_round',
+        'current_throw',
+        'elapsed_seconds',
+        'target_number',
+        'mode',
+        'user_note',
+        'undo_snapshot_json',
+        'started_at',
+        'paused_at',
+        'completed_at',
+        'created_at',
+        'updated_at',
+        'deleted_at',
+      ],
+      drill_rounds: [
+        'id',
+        'account_id',
+        'player_id',
+        'drill_session_id',
+        'round_number',
+        'target_number',
+        'throws',
+        'hit_count',
+        'mark_count',
+        'inner_bull',
+        'outer_bull',
+        'single_count',
+        'double_count',
+        'triple_count',
+        'created_at',
+        'updated_at',
+      ],
+      drill_results: [
+        'id',
+        'account_id',
+        'player_id',
+        'drill_session_id',
+        'drill_definition_id',
+        'total_throws',
+        'hit_count',
+        'mark_count',
+        'success_rate',
+        'bull_rate',
+        'round_average',
+        'inner_bull',
+        'outer_bull',
+        'single_count',
+        'double_count',
+        'triple_count',
+        'zero_rounds',
+        'three_plus_mark_rounds',
+        'best_target',
+        'weakest_target',
+        'longest_streak',
+        'longest_miss_streak',
+        'grouping_radius',
+        'horizontal_spread',
+        'vertical_spread',
+        'fatigue_drop',
+        'feeling_label',
+        'tension_label',
+        'fatigue_label',
+        'note',
+        'summary_json',
+        'created_at',
+        'updated_at',
+      ],
+      drill_target_results: [
+        'id',
+        'account_id',
+        'player_id',
+        'drill_result_id',
+        'target_number',
+        'throws',
+        'hit_count',
+        'mark_count',
+        'success_rate',
+        'created_at',
+      ],
+      daily_minimum_completion: [
+        'id',
+        'account_id',
+        'player_id',
+        'practice_date',
+        'completed_items',
+        'total_items',
+        'completion_rate',
+        'total_throws',
+        'duration_seconds',
+        'achieved',
+        'incomplete_items_json',
+        'created_at',
+        'updated_at',
+      ],
+      recommended_drills: [
+        'id',
+        'account_id',
+        'player_id',
+        'drill_definition_id',
+        'practice_date',
+        'source_reason',
+        'priority',
+        'status',
+        'time_preset',
+        'created_at',
+        'updated_at',
+        'deleted_at',
+      ],
     };
 
     let importedRows = 0;
@@ -2006,6 +2927,19 @@ export function createSupportRepository(db: SQLiteDatabase) {
     listTrainingThrows,
     saveThrowPhotoSession,
     listThrowPhotoSessions,
+    listDrillDefinitions,
+    getOrCreateDailyMinimumPlan,
+    startDrillSession,
+    updateDrillSessionProgress,
+    saveDrillResult,
+    listDrillSessions,
+    listDrillResults,
+    generateRecommendedDrills,
+    listRecommendedDrills,
+    applyRecommendedDrill,
+    createCustomDrill,
+    updateDrillFavorite,
+    hideDrillDefinition,
     exportBackup,
     importBackup,
   };

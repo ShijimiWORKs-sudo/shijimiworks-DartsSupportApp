@@ -1,6 +1,7 @@
 import type { SQLiteDatabase } from 'expo-sqlite';
 
 import { MIGRATIONS, SUPPORT_DATABASE_FILE_NAME } from './schema';
+import { getBuiltInDrills } from '../domain/drills';
 
 export { SUPPORT_DATABASE_FILE_NAME };
 
@@ -37,6 +38,7 @@ export async function initializeSupportDatabase(db: SupportDatabase): Promise<vo
   }
 
   await ensureDefaultAccountAndPlayer(db);
+  await seedBuiltInDrills(db);
 }
 
 async function ensureDefaultAccountAndPlayer(db: SupportDatabase): Promise<void> {
@@ -65,5 +67,43 @@ async function ensureDefaultAccountAndPlayer(db: SupportDatabase): Promise<void>
       now,
       now,
     );
+  });
+}
+
+async function seedBuiltInDrills(db: SupportDatabase): Promise<void> {
+  const now = new Date().toISOString();
+  await db.withTransactionAsync(async () => {
+    for (const drill of getBuiltInDrills()) {
+      await db.runAsync(
+        `INSERT OR IGNORE INTO training_drill_definitions(
+          id, drill_type, category, name, purpose, target_type, target_numbers, rounds,
+          throws_per_round, total_throws, success_rule, scoring_mode, estimated_minutes,
+          target_level_min, target_level_max, is_daily_minimum, is_builtin, can_use_photo,
+          can_use_video, difficulty, sort_order, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)`,
+        drill.id,
+        drill.type,
+        drill.category,
+        drill.name,
+        drill.purpose,
+        drill.targetNumbers.length > 0 ? 'number' : 'none',
+        JSON.stringify(drill.targetNumbers),
+        drill.rounds,
+        drill.throwsPerRound,
+        drill.totalThrows,
+        drill.successRule,
+        drill.scoringMode,
+        drill.estimatedMinutes,
+        drill.targetLevelMin,
+        drill.targetLevelMax,
+        drill.isDailyMinimum ? 1 : 0,
+        drill.canUsePhoto ? 1 : 0,
+        drill.canUseVideo ? 1 : 0,
+        drill.difficulty,
+        drill.sortOrder,
+        now,
+        now,
+      );
+    }
   });
 }
