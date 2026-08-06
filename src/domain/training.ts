@@ -192,6 +192,17 @@ export function recommendMenusForLevel(level: PlayerLevel, plannedDate: string):
     repeatWeekdays: null,
     isAiSuggested: false,
     sourceAssessmentId: null,
+    drillDefinitionId: null,
+    drillType: null,
+    inputMode: null,
+    targetType: null,
+    targetNumbers: null,
+    totalThrows: null,
+    targetSuccessCount: null,
+    scoringMode: null,
+    markMode: null,
+    sourceType: 'level_recommendation',
+    sourceId: null,
   }));
 }
 

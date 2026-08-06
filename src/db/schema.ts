@@ -1,5 +1,5 @@
 export const SUPPORT_DATABASE_FILE_NAME = 'darts_support.db';
-export const CURRENT_SCHEMA_VERSION = 3;
+export const CURRENT_SCHEMA_VERSION = 4;
 
 export const MIGRATION_001_INITIAL = `
 PRAGMA foreign_keys = ON;
@@ -712,6 +712,76 @@ CREATE INDEX IF NOT EXISTS idx_recommended_drills_date
 ON recommended_drills(account_id, player_id, practice_date, status, priority);
 `;
 
+export const MIGRATION_004_ROUND_BASED_DRILL_INPUT = `
+PRAGMA foreign_keys = ON;
+
+ALTER TABLE training_drill_definitions ADD COLUMN short_description TEXT;
+ALTER TABLE training_drill_definitions ADD COLUMN preparation_json TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE training_drill_definitions ADD COLUMN instructions_json TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE training_drill_definitions ADD COLUMN success_condition TEXT;
+ALTER TABLE training_drill_definitions ADD COLUMN finish_condition TEXT;
+ALTER TABLE training_drill_definitions ADD COLUMN input_guide TEXT;
+ALTER TABLE training_drill_definitions ADD COLUMN recorded_metrics_json TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE training_drill_definitions ADD COLUMN common_mistakes_json TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE training_drill_definitions ADD COLUMN cautions_json TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE training_drill_definitions ADD COLUMN beginner_tips_json TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE training_drill_definitions ADD COLUMN input_mode TEXT NOT NULL DEFAULT 'round_three_throw';
+ALTER TABLE training_drill_definitions ADD COLUMN mark_mode TEXT NOT NULL DEFAULT 'none';
+ALTER TABLE training_drill_definitions ADD COLUMN target_success_count INTEGER;
+ALTER TABLE training_drill_definitions ADD COLUMN completion_rule TEXT NOT NULL DEFAULT 'fixed_throws';
+
+ALTER TABLE daily_practice_items ADD COLUMN drill_definition_id TEXT REFERENCES training_drill_definitions(id) ON DELETE SET NULL;
+ALTER TABLE daily_practice_items ADD COLUMN drill_type TEXT;
+ALTER TABLE daily_practice_items ADD COLUMN input_mode TEXT;
+ALTER TABLE daily_practice_items ADD COLUMN target_type TEXT;
+ALTER TABLE daily_practice_items ADD COLUMN target_numbers TEXT;
+ALTER TABLE daily_practice_items ADD COLUMN total_throws INTEGER;
+ALTER TABLE daily_practice_items ADD COLUMN target_success_count INTEGER;
+ALTER TABLE daily_practice_items ADD COLUMN scoring_mode TEXT;
+ALTER TABLE daily_practice_items ADD COLUMN mark_mode TEXT;
+ALTER TABLE daily_practice_items ADD COLUMN source_type TEXT;
+ALTER TABLE daily_practice_items ADD COLUMN source_id TEXT;
+
+ALTER TABLE drill_sessions ADD COLUMN round_input_mode TEXT NOT NULL DEFAULT 'round_three_throw';
+ALTER TABLE drill_sessions ADD COLUMN round_status TEXT NOT NULL DEFAULT 'idle';
+ALTER TABLE drill_sessions ADD COLUMN intended_target TEXT;
+ALTER TABLE drill_sessions ADD COLUMN round_draft_json TEXT;
+ALTER TABLE drill_sessions ADD COLUMN completion_rule TEXT;
+ALTER TABLE drill_sessions ADD COLUMN completion_target INTEGER;
+ALTER TABLE drill_sessions ADD COLUMN finish_at_round_end INTEGER NOT NULL DEFAULT 1;
+
+CREATE TABLE IF NOT EXISTS drill_throw_results (
+  id TEXT PRIMARY KEY NOT NULL,
+  account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  player_id TEXT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+  drill_session_id TEXT NOT NULL REFERENCES drill_sessions(id) ON DELETE CASCADE,
+  round_number INTEGER NOT NULL,
+  throw_number INTEGER NOT NULL,
+  overall_throw_number INTEGER NOT NULL,
+  result_type TEXT NOT NULL,
+  intended_target TEXT,
+  target_number TEXT,
+  actual_number TEXT,
+  segment TEXT,
+  multiplier INTEGER NOT NULL DEFAULT 0,
+  score INTEGER NOT NULL DEFAULT 0,
+  mark_count INTEGER NOT NULL DEFAULT 0,
+  is_hit INTEGER NOT NULL DEFAULT 0,
+  is_inner_bull INTEGER NOT NULL DEFAULT 0,
+  is_outer_bull INTEGER NOT NULL DEFAULT 0,
+  target_hit INTEGER NOT NULL DEFAULT 0,
+  catch_hit INTEGER NOT NULL DEFAULT 0,
+  input_method TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_drill_throw_results_session_throw
+ON drill_throw_results(drill_session_id, overall_throw_number);
+
+CREATE INDEX IF NOT EXISTS idx_drill_throw_results_session_round
+ON drill_throw_results(drill_session_id, round_number, throw_number);
+`;
+
 export const MIGRATIONS = [
   {
     version: 1,
@@ -727,5 +797,10 @@ export const MIGRATIONS = [
     version: 3,
     name: '003_daily_drills_training_library',
     sql: MIGRATION_003_DAILY_DRILLS_TRAINING_LIBRARY,
+  },
+  {
+    version: 4,
+    name: '004_round_based_drill_input',
+    sql: MIGRATION_004_ROUND_BASED_DRILL_INPUT,
   },
 ] as const;

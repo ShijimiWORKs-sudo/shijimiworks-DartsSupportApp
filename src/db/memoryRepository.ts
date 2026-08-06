@@ -44,10 +44,14 @@ import {
   findWeakCricketTarget,
   generateTimePreset,
   getBuiltInDrills,
+  isDrillCompletionReached,
   summarizeDailyMinimum,
   summarizeDrillResult,
+  summarizeDrillThrows,
   type DrillCategory,
   type DrillResultInput,
+  type DrillThrowSummary,
+  type DrillThrowResultInput,
   type TimePreset,
 } from '../domain/drills';
 import {
@@ -64,6 +68,8 @@ import {
 
 const accountId = 'local-account';
 const playerId = 'owner-player';
+
+type MemoryDrillThrowResult = DrillThrowResultInput & { drillSessionId: string };
 
 function nowIso() {
   return new Date().toISOString();
@@ -117,6 +123,17 @@ export function createMemorySupportRepository(): SupportRepository {
         repeatWeekdays: null,
         isAiSuggested: false,
         sourceAssessmentId: null,
+        drillDefinitionId: null,
+        drillType: null,
+        inputMode: null,
+        targetType: null,
+        targetNumbers: null,
+        totalThrows: null,
+        targetSuccessCount: null,
+        scoringMode: null,
+        markMode: null,
+        sourceType: null,
+        sourceId: null,
       },
       planId,
       null,
@@ -168,11 +185,69 @@ export function createMemorySupportRepository(): SupportRepository {
     difficulty: drill.difficulty,
     sort_order: drill.sortOrder,
     is_favorite: 0,
+    short_description: drill.instructions.shortDescription,
+    preparation_json: JSON.stringify(drill.instructions.preparation),
+    instructions_json: JSON.stringify(drill.instructions.instructions),
+    success_condition: drill.instructions.successCondition,
+    finish_condition: drill.instructions.finishCondition,
+    input_guide: drill.instructions.inputGuide,
+    recorded_metrics_json: JSON.stringify(drill.instructions.recordedMetrics),
+    common_mistakes_json: JSON.stringify(drill.instructions.commonMistakes),
+    cautions_json: JSON.stringify(drill.instructions.cautions),
+    beginner_tips_json: JSON.stringify(drill.instructions.beginnerTips),
+    input_mode: drill.inputMode,
+    mark_mode: drill.markMode,
+    target_success_count: drill.targetSuccessCount,
+    completion_rule: drill.completionRule,
   }));
   const dailyMinimumPlans: DailyMinimumBundle[] = [];
   const drillSessions: DrillSessionRow[] = [];
+  const drillThrowResults: MemoryDrillThrowResult[] = [];
   const drillResults: DrillResultRow[] = [];
   const recommendedDrills: RecommendedDrillRow[] = [];
+
+  function parseTargets(value: string | null | undefined): (number | 'BULL' | string)[] {
+    if (!value) {
+      return [];
+    }
+    try {
+      const parsed = JSON.parse(value);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return value
+        .split(',')
+        .map((part) => part.trim())
+        .filter(Boolean);
+    }
+  }
+
+  function upsertMemoryDrillResult(session: DrillSessionRow, summary: DrillThrowSummary) {
+    const existing = drillResults.find((candidate) => candidate.drill_session_id === session.id);
+    const result: DrillResultRow = {
+      id: existing?.id ?? id('drillresult'),
+      drill_session_id: session.id,
+      drill_definition_id: session.drill_definition_id,
+      total_throws: summary.totalThrows,
+      hit_count: summary.hitCount,
+      mark_count: summary.markCount,
+      success_rate: summary.totalThrows ? summary.hitCount / summary.totalThrows : 0,
+      bull_rate: summary.bullRate,
+      round_average: Math.ceil(summary.totalThrows / 3)
+        ? summary.markCount / Math.ceil(summary.totalThrows / 3)
+        : 0,
+      best_target:
+        Object.entries(summary.targetProgress).sort((a, b) => b[1] - a[1])[0]?.[0] ?? null,
+      weakest_target:
+        Object.entries(summary.targetProgress).sort((a, b) => a[1] - b[1])[0]?.[0] ?? null,
+      summary_json: JSON.stringify(summary),
+      created_at: nowIso(),
+    };
+    if (existing) {
+      Object.assign(existing, result);
+    } else {
+      drillResults.unshift(result);
+    }
+  }
 
   const repo: SupportRepository = {
     async getOrCreatePlan() {
@@ -413,6 +488,17 @@ export function createMemorySupportRepository(): SupportRepository {
           repeatWeekdays: null,
           isAiSuggested: true,
           sourceAssessmentId: recommendation.assessment_id,
+          drillDefinitionId: null,
+          drillType: null,
+          inputMode: null,
+          targetType: null,
+          targetNumbers: null,
+          totalThrows: null,
+          targetSuccessCount: null,
+          scoringMode: null,
+          markMode: null,
+          sourceType: 'assessment_recommendation',
+          sourceId: recommendation.id,
         },
         saveAsTemplate,
       );
@@ -619,6 +705,9 @@ export function createMemorySupportRepository(): SupportRepository {
         .filter((drill) => !category || drill.category === category)
         .sort((a, b) => a.sort_order - b.sort_order);
     },
+    async getDrillDefinition(drillDefinitionId) {
+      return drillDefinitions.find((definition) => definition.id === drillDefinitionId) ?? null;
+    },
     async getOrCreateDailyMinimumPlan(date): Promise<DailyMinimumBundle> {
       const existing = dailyMinimumPlans.find((plan) => plan.plan.practice_date === date);
       if (existing) {
@@ -677,6 +766,17 @@ export function createMemorySupportRepository(): SupportRepository {
         elapsed_seconds: 0,
         target_number: null,
         mode: null,
+        round_input_mode: 'round_three_throw',
+        round_status: 'idle',
+        intended_target: null,
+        round_draft_json: null,
+        completion_rule:
+          drillDefinitions.find((definition) => definition.id === drillDefinitionId)
+            ?.completion_rule ?? null,
+        completion_target:
+          drillDefinitions.find((definition) => definition.id === drillDefinitionId)
+            ?.target_success_count ?? null,
+        finish_at_round_end: 1,
         started_at: nowIso(),
         paused_at: null,
         completed_at: null,
@@ -705,6 +805,113 @@ export function createMemorySupportRepository(): SupportRepository {
         session.paused_at = status === 'paused' ? nowIso() : session.paused_at;
         session.completed_at = status === 'completed' ? nowIso() : session.completed_at;
       }
+    },
+    async recordDrillRound(drillSessionId, throws) {
+      if (throws.length === 0 || throws.length > 3) {
+        throw new Error('ラウンドは1～3投で確定してください。');
+      }
+      const session = drillSessions.find((candidate) => candidate.id === drillSessionId);
+      if (!session) {
+        throw new Error('ドリルセッションが見つかりません。');
+      }
+      const definition = drillDefinitions.find(
+        (candidate) => candidate.id === session.drill_definition_id,
+      );
+      if (!definition) {
+        throw new Error('ドリル定義が見つかりません。');
+      }
+      const roundNumber = throws[0]?.roundNumber ?? session.current_round;
+      for (let index = drillThrowResults.length - 1; index >= 0; index -= 1) {
+        const throwResult = drillThrowResults[index];
+        if (!throwResult) {
+          continue;
+        }
+        if (
+          throwResult.drillSessionId === drillSessionId &&
+          throwResult.roundNumber === roundNumber
+        ) {
+          drillThrowResults.splice(index, 1);
+        }
+      }
+      drillThrowResults.push(...throws.map((throwResult) => ({ ...throwResult, drillSessionId })));
+      const sessionThrows = drillThrowResults.filter(
+        (throwResult) => throwResult.drillSessionId === drillSessionId,
+      );
+      const summary = summarizeDrillThrows(sessionThrows);
+      const targets = parseTargets(definition.target_numbers);
+      const completed = isDrillCompletionReached(
+        {
+          completionRule: definition.completion_rule as never,
+          targetSuccessCount: definition.target_success_count ?? null,
+          totalThrows: definition.total_throws,
+          targetNumbers: targets,
+        },
+        summary,
+      );
+      session.current_round = Math.floor(summary.totalThrows / 3) + 1;
+      session.current_throw = summary.totalThrows % 3;
+      session.status = completed ? 'completed' : 'in_progress';
+      session.completed_at = completed ? nowIso() : null;
+      upsertMemoryDrillResult(session, summary);
+    },
+    async undoLastDrillRound(drillSessionId) {
+      const session = drillSessions.find((candidate) => candidate.id === drillSessionId);
+      if (!session) {
+        return;
+      }
+      const sessionThrows = drillThrowResults.filter(
+        (throwResult) => throwResult.drillSessionId === drillSessionId,
+      );
+      const latestRound = Math.max(
+        ...sessionThrows.map((throwResult) => throwResult.roundNumber),
+        0,
+      );
+      for (let index = drillThrowResults.length - 1; index >= 0; index -= 1) {
+        const throwResult = drillThrowResults[index];
+        if (!throwResult) {
+          continue;
+        }
+        if (
+          throwResult.drillSessionId === drillSessionId &&
+          throwResult.roundNumber === latestRound
+        ) {
+          drillThrowResults.splice(index, 1);
+        }
+      }
+      const summary = summarizeDrillThrows(
+        drillThrowResults.filter((throwResult) => throwResult.drillSessionId === drillSessionId),
+      );
+      session.current_round = Math.floor(summary.totalThrows / 3) + 1;
+      session.current_throw = summary.totalThrows % 3;
+      session.status = 'in_progress';
+      session.completed_at = null;
+      upsertMemoryDrillResult(session, summary);
+    },
+    async listDrillThrowResults(drillSessionId) {
+      return drillThrowResults
+        .filter((throwResult) => throwResult.drillSessionId === drillSessionId)
+        .map((throwResult) => ({
+          id: `${drillSessionId}-${throwResult.overallThrowNumber}`,
+          drill_session_id: drillSessionId,
+          round_number: throwResult.roundNumber,
+          throw_number: throwResult.throwNumber,
+          overall_throw_number: throwResult.overallThrowNumber,
+          result_type: throwResult.resultType,
+          intended_target: String(throwResult.intendedTarget ?? ''),
+          target_number: String(throwResult.targetNumber ?? ''),
+          actual_number: throwResult.actualNumber ? String(throwResult.actualNumber) : null,
+          segment: throwResult.segment ?? null,
+          multiplier: throwResult.multiplier,
+          score: throwResult.score,
+          mark_count: throwResult.markCount,
+          is_hit: throwResult.isHit ? 1 : 0,
+          is_inner_bull: throwResult.isInnerBull ? 1 : 0,
+          is_outer_bull: throwResult.isOuterBull ? 1 : 0,
+          target_hit: throwResult.targetHit ? 1 : 0,
+          catch_hit: throwResult.catchHit ? 1 : 0,
+          input_method: throwResult.inputMethod,
+          created_at: nowIso(),
+        }));
     },
     async saveDrillResult(drillSessionId, input: DrillResultInput) {
       const session = drillSessions.find((candidate) => candidate.id === drillSessionId);
@@ -826,6 +1033,35 @@ export function createMemorySupportRepository(): SupportRepository {
           repeatWeekdays: null,
           isAiSuggested: false,
           sourceAssessmentId: null,
+          drillDefinitionId: recommendation.drill_definition_id,
+          drillType:
+            drillDefinitions.find(
+              (definition) => definition.id === recommendation.drill_definition_id,
+            )?.drill_type ?? null,
+          inputMode: 'round_three_throw',
+          targetType: 'number',
+          targetNumbers:
+            drillDefinitions.find(
+              (definition) => definition.id === recommendation.drill_definition_id,
+            )?.target_numbers ?? null,
+          totalThrows:
+            drillDefinitions.find(
+              (definition) => definition.id === recommendation.drill_definition_id,
+            )?.total_throws ?? null,
+          targetSuccessCount:
+            drillDefinitions.find(
+              (definition) => definition.id === recommendation.drill_definition_id,
+            )?.target_success_count ?? null,
+          scoringMode:
+            drillDefinitions.find(
+              (definition) => definition.id === recommendation.drill_definition_id,
+            )?.scoring_mode ?? null,
+          markMode:
+            drillDefinitions.find(
+              (definition) => definition.id === recommendation.drill_definition_id,
+            )?.mark_mode ?? null,
+          sourceType: 'recommended_drill',
+          sourceId: recommendation.id,
         },
         false,
       );
@@ -855,6 +1091,25 @@ export function createMemorySupportRepository(): SupportRepository {
         difficulty: 5,
         sort_order: 999,
         is_favorite: input.isFavorite ? 1 : 0,
+        short_description: input.purpose,
+        preparation_json: JSON.stringify(['狙う場所と入力方法を確認する']),
+        instructions_json: JSON.stringify(
+          (input.instructions ?? input.successRule ?? input.purpose)
+            .split(/\r?\n/)
+            .map((line) => line.trim())
+            .filter(Boolean),
+        ),
+        success_condition: input.successRule ?? 'ユーザーが設定した条件を満たす',
+        finish_condition: input.totalThrows ? `${input.totalThrows}投で終了` : 'ユーザー判断で終了',
+        input_guide: input.inputGuide ?? '3投まとめて入力し、必要に応じて結果を補正します。',
+        recorded_metrics_json: JSON.stringify(['総投矢数', '命中数', 'メモ']),
+        common_mistakes_json: JSON.stringify(['目的を確認しないまま始める']),
+        cautions_json: JSON.stringify(['痛みや強い疲労がある場合は中断する']),
+        beginner_tips_json: JSON.stringify(['最初は少ない投数で試す']),
+        input_mode: 'round_three_throw',
+        mark_mode: 'none',
+        target_success_count: null,
+        completion_rule: 'manual',
       });
       return customId;
     },
@@ -897,6 +1152,7 @@ export function createMemorySupportRepository(): SupportRepository {
           daily_minimum_plans: dailyMinimumPlans.map((bundle) => bundle.plan),
           daily_minimum_items: dailyMinimumPlans.flatMap((bundle) => bundle.items),
           drill_sessions: drillSessions,
+          drill_throw_results: drillThrowResults,
           drill_results: drillResults,
           recommended_drills: recommendedDrills,
           videoPolicy: '動画本体は含めません。',

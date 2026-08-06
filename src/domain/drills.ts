@@ -14,11 +14,25 @@ export type DrillCategory =
 
 export type DrillType =
   | 'warmup_wide_single'
+  | 'bull_target_10'
+  | 'bull_target_15'
+  | 'bull_target_30'
+  | 'bull_target_50'
   | 'bull_30'
   | 'bull_50'
   | 'bull_100'
   | 'bull_grouping'
   | 'first_dart_bull'
+  | 'cricket_20_5_marks'
+  | 'cricket_20_10_marks'
+  | 'cricket_19_10_marks'
+  | 'cricket_18_10_marks'
+  | 'cricket_20_19_5_marks'
+  | 'cricket_20_19_18_5_marks'
+  | 'cricket_20_19_18_10_marks'
+  | 'cricket_20_to_15_10_marks'
+  | 'cricket_20_to_bull_10_marks'
+  | 'cricket_custom_marks'
   | 'cricket_number_15'
   | 'cricket_full_round'
   | 'cricket_close'
@@ -44,6 +58,27 @@ export type DrillType =
 
 export type TimePreset = '5' | '10' | '15' | '30' | '45' | '60' | 'custom';
 
+export type DrillInputMode =
+  'round_three_throw' | 'round_summary' | 'photo_round' | 'manual_summary';
+
+export type DrillCompletionRule =
+  'fixed_throws' | 'bull_count' | 'mark_count' | 'all_targets_mark_count' | 'manual';
+
+export type DrillInstructionDetails = {
+  shortDescription: string;
+  preparation: string[];
+  instructions: string[];
+  successCondition: string;
+  finishCondition: string;
+  inputGuide: string;
+  recordedMetrics: string[];
+  commonMistakes: string[];
+  cautions: string[];
+  beginnerTips: string[];
+  photoScoringSupported: boolean;
+  videoRecommended: boolean;
+};
+
 export type DrillDefinition = {
   id: string;
   type: DrillType;
@@ -63,8 +98,13 @@ export type DrillDefinition = {
   sortOrder: number;
   successRule: string;
   scoringMode: 'hit' | 'mark' | 'score' | 'coordinate' | 'self_rating';
+  inputMode: DrillInputMode;
+  markMode: 'none' | 'cricket' | 'bull_count';
+  targetSuccessCount: number | null;
+  completionRule: DrillCompletionRule;
   canUsePhoto: boolean;
   canUseVideo: boolean;
+  instructions: DrillInstructionDetails;
 };
 
 export type DrillResultInput = {
@@ -95,6 +135,57 @@ export type DrillRoundResult = {
   singles?: number;
   doubles?: number;
   triples?: number;
+};
+
+export type DrillThrowResultInput = {
+  roundNumber: number;
+  throwNumber: number;
+  overallThrowNumber: number;
+  resultType: string;
+  intendedTarget?: number | 'BULL' | string | null;
+  targetNumber?: number | 'BULL' | string | null;
+  actualNumber?: number | 'BULL' | string | null;
+  segment?: string | null;
+  multiplier: number;
+  score: number;
+  markCount: number;
+  isHit: boolean;
+  isInnerBull: boolean;
+  isOuterBull: boolean;
+  targetHit: boolean;
+  catchHit: boolean;
+  inputMethod:
+    | 'round_count'
+    | 'round_detail'
+    | 'photo_auto'
+    | 'photo_adjusted'
+    | 'photo_manual'
+    | 'score_manual';
+};
+
+export type DrillThrowSummary = {
+  totalThrows: number;
+  hitCount: number;
+  markCount: number;
+  innerBull: number;
+  outerBull: number;
+  bullCount: number;
+  bullRate: number;
+  innerRate: number;
+  singleCount: number;
+  doubleCount: number;
+  tripleCount: number;
+  longestBullStreak: number;
+  longestNoBullStreak: number;
+  allBullRounds: number;
+  allInnerRounds: number;
+  zeroMarkRounds: number;
+  tenThrowBullCounts: number[];
+  twentyFiveThrowBullCounts: number[];
+  firstHalfBullRate: number | null;
+  secondHalfBullRate: number | null;
+  fatigueDropCandidate: boolean;
+  targetProgress: Record<string, number>;
 };
 
 export type DrillSummary = {
@@ -149,10 +240,110 @@ export const BUILTIN_DRILL_DEFINITIONS: DrillDefinition[] = [
     false,
   ),
   drill(
+    'bull_target_10',
+    'bull_target_10',
+    'bull',
+    'BULL 10本達成',
+    'INNERとOUTERを合わせて10本のBULL到達を目指す',
+    ['BULL'],
+    0,
+    null,
+    3,
+    8,
+    'C',
+    'SA',
+    true,
+    18,
+    'BULL合計が10本に到達したラウンドで終了する。',
+    'coordinate',
+    true,
+    false,
+    {
+      markMode: 'bull_count',
+      targetSuccessCount: 10,
+      completionRule: 'bull_count',
+    },
+  ),
+  drill(
+    'bull_target_15',
+    'bull_target_15',
+    'bull',
+    'BULL 15本達成',
+    '15本到達までの投数とラウンド数を記録する',
+    ['BULL'],
+    0,
+    null,
+    3,
+    12,
+    'CCC',
+    'SA',
+    true,
+    19,
+    'BULL合計が15本に到達したラウンドで終了する。',
+    'coordinate',
+    true,
+    false,
+    {
+      markMode: 'bull_count',
+      targetSuccessCount: 15,
+      completionRule: 'bull_count',
+    },
+  ),
+  drill(
+    'bull_target_30',
+    'bull_target_30',
+    'bull',
+    'BULL 30本達成',
+    '30本到達までの安定性と疲労傾向を見る',
+    ['BULL'],
+    0,
+    null,
+    3,
+    20,
+    'B',
+    'SA',
+    false,
+    22,
+    'BULL合計が30本に到達したラウンドで終了する。',
+    'coordinate',
+    true,
+    false,
+    {
+      markMode: 'bull_count',
+      targetSuccessCount: 30,
+      completionRule: 'bull_count',
+    },
+  ),
+  drill(
+    'bull_target_50',
+    'bull_target_50',
+    'bull',
+    'BULL 50本達成',
+    '50本到達までの長時間再現性を確認する',
+    ['BULL'],
+    0,
+    null,
+    3,
+    35,
+    'A',
+    'SA',
+    false,
+    23,
+    'BULL合計が50本に到達したラウンドで終了する。',
+    'coordinate',
+    true,
+    false,
+    {
+      markMode: 'bull_count',
+      targetSuccessCount: 50,
+      completionRule: 'bull_count',
+    },
+  ),
+  drill(
     'bull_30',
     'bull_30',
     'bull',
-    'BULL 30',
+    'BULL 30投',
     '10ラウンド30投でBULL率と集中度を見る',
     ['BULL'],
     30,
@@ -172,7 +363,7 @@ export const BUILTIN_DRILL_DEFINITIONS: DrillDefinition[] = [
     'bull_50',
     'bull_50',
     'bull',
-    'BULL 50',
+    'BULL 50投',
     '50投で長めの再現性と疲労低下を見る',
     ['BULL'],
     50,
@@ -192,7 +383,7 @@ export const BUILTIN_DRILL_DEFINITIONS: DrillDefinition[] = [
     'bull_100',
     'bull_100',
     'bull',
-    'BULL 100',
+    'BULL 100投',
     '100投でBULL率推移と疲労傾向を見る',
     ['BULL'],
     100,
@@ -247,6 +438,246 @@ export const BUILTIN_DRILL_DEFINITIONS: DrillDefinition[] = [
     'hit',
     true,
     false,
+  ),
+  drill(
+    'cricket_20_5_marks',
+    'cricket_20_5_marks',
+    'cricket',
+    '20を5マーク',
+    '20ナンバーを5マークするまで狙う',
+    [20],
+    0,
+    null,
+    3,
+    5,
+    'C',
+    'CCC',
+    true,
+    36,
+    '20の累計マークが5以上になったラウンドで終了する。',
+    'mark',
+    true,
+    false,
+    {
+      targetSuccessCount: 5,
+      completionRule: 'mark_count',
+    },
+  ),
+  drill(
+    'cricket_20_10_marks',
+    'cricket_20_10_marks',
+    'cricket',
+    '20を10マーク',
+    '20ナンバーを10マークするまで狙う',
+    [20],
+    0,
+    null,
+    3,
+    8,
+    'CC',
+    'SA',
+    false,
+    37,
+    '20の累計マークが10以上になったラウンドで終了する。',
+    'mark',
+    true,
+    false,
+    {
+      targetSuccessCount: 10,
+      completionRule: 'mark_count',
+    },
+  ),
+  drill(
+    'cricket_19_10_marks',
+    'cricket_19_10_marks',
+    'cricket',
+    '19を10マーク',
+    '19ナンバーを10マークするまで狙う',
+    [19],
+    0,
+    null,
+    3,
+    8,
+    'CC',
+    'SA',
+    false,
+    38,
+    '19の累計マークが10以上になったラウンドで終了する。',
+    'mark',
+    true,
+    false,
+    {
+      targetSuccessCount: 10,
+      completionRule: 'mark_count',
+    },
+  ),
+  drill(
+    'cricket_18_10_marks',
+    'cricket_18_10_marks',
+    'cricket',
+    '18を10マーク',
+    '18ナンバーを10マークするまで狙う',
+    [18],
+    0,
+    null,
+    3,
+    8,
+    'CC',
+    'SA',
+    false,
+    39,
+    '18の累計マークが10以上になったラウンドで終了する。',
+    'mark',
+    true,
+    false,
+    {
+      targetSuccessCount: 10,
+      completionRule: 'mark_count',
+    },
+  ),
+  drill(
+    'cricket_20_19_5_marks',
+    'cricket_20_19_5_marks',
+    'cricket',
+    '20・19を各5マーク',
+    '20と19をどちらも5マークまで積み上げる',
+    [20, 19],
+    0,
+    null,
+    3,
+    8,
+    'CC',
+    'SA',
+    true,
+    40,
+    '20と19がどちらも5マーク以上になったラウンドで終了する。',
+    'mark',
+    true,
+    false,
+    {
+      targetSuccessCount: 5,
+      completionRule: 'all_targets_mark_count',
+    },
+  ),
+  drill(
+    'cricket_20_19_18_5_marks',
+    'cricket_20_19_18_5_marks',
+    'cricket',
+    '20・19・18を各5マーク',
+    '20、19、18をすべて5マークまで積み上げる',
+    [20, 19, 18],
+    0,
+    null,
+    3,
+    10,
+    'CCC',
+    'SA',
+    true,
+    41,
+    '20、19、18がすべて5マーク以上になったラウンドで終了する。',
+    'mark',
+    true,
+    false,
+    {
+      targetSuccessCount: 5,
+      completionRule: 'all_targets_mark_count',
+    },
+  ),
+  drill(
+    'cricket_20_19_18_10_marks',
+    'cricket_20_19_18_10_marks',
+    'cricket',
+    '20・19・18を各10マーク',
+    '上位クリケット3ナンバーを均等に鍛える',
+    [20, 19, 18],
+    0,
+    null,
+    3,
+    15,
+    'B',
+    'SA',
+    false,
+    42,
+    '20、19、18がすべて10マーク以上になったラウンドで終了する。',
+    'mark',
+    true,
+    false,
+    {
+      targetSuccessCount: 10,
+      completionRule: 'all_targets_mark_count',
+    },
+  ),
+  drill(
+    'cricket_20_to_15_10_marks',
+    'cricket_20_to_15_10_marks',
+    'cricket',
+    '20～15を各10マーク',
+    'クリケット全ナンバーの達成力を確認する',
+    [20, 19, 18, 17, 16, 15],
+    0,
+    null,
+    3,
+    25,
+    'BBB',
+    'SA',
+    false,
+    43,
+    '20から15がすべて10マーク以上になったラウンドで終了する。',
+    'mark',
+    true,
+    false,
+    {
+      targetSuccessCount: 10,
+      completionRule: 'all_targets_mark_count',
+    },
+  ),
+  drill(
+    'cricket_20_to_bull_10_marks',
+    'cricket_20_to_bull_10_marks',
+    'cricket',
+    '20～15・BULLを各10マーク',
+    'クリケット全対象とBULLを同じ基準で鍛える',
+    [20, 19, 18, 17, 16, 15, 'BULL'],
+    0,
+    null,
+    3,
+    30,
+    'A',
+    'SA',
+    false,
+    44,
+    '20から15とBULLがすべて10マーク以上になったラウンドで終了する。',
+    'mark',
+    true,
+    false,
+    {
+      targetSuccessCount: 10,
+      completionRule: 'all_targets_mark_count',
+    },
+  ),
+  drill(
+    'cricket_custom_marks',
+    'cricket_custom_marks',
+    'cricket',
+    '任意ナンバーを指定マーク',
+    '対象ナンバーと目標マーク数を決めて達成まで続ける',
+    [20],
+    0,
+    null,
+    3,
+    10,
+    'C',
+    'SA',
+    false,
+    45,
+    'ユーザーが選んだ対象の指定マークに到達したラウンドで終了する。',
+    'mark',
+    true,
+    false,
+    {
+      targetSuccessCount: 10,
+      completionRule: 'mark_count',
+    },
   ),
   drill(
     'cricket_number_15',
@@ -671,22 +1102,28 @@ export const BUILTIN_DRILL_DEFINITIONS: DrillDefinition[] = [
 ];
 
 export const DAILY_MINIMUM_BY_LEVEL: Record<PlayerLevel, string[]> = {
-  C: ['warmup_wide_single', 'bull_30', 'wide_single_round', 'daily_finish_three'],
-  CC: ['warmup_wide_single', 'bull_30', 'cricket_number_15', 'daily_finish_three'],
-  CCC: ['bull_30', 'cricket_number_15', 'cricket_full_round', 'daily_finish_three'],
+  C: ['warmup_wide_single', 'bull_target_10', 'cricket_20_5_marks', 'daily_finish_three'],
+  CC: ['warmup_wide_single', 'bull_target_10', 'cricket_20_19_5_marks', 'daily_finish_three'],
+  CCC: ['bull_target_15', 'cricket_20_19_18_5_marks', 'cricket_full_round', 'daily_finish_three'],
   B: [
-    'bull_50',
+    'bull_target_30',
     'weak_cricket_number',
     'cricket_full_round',
     'common_doubles',
     'daily_finish_three',
   ],
-  BB: ['bull_50', 't20_t19_focus', 'weak_cricket_number', 'common_doubles', 'no_score_form'],
-  BBB: ['bull_50', 'bull_grouping', 'random_cricket', 't20_t19_focus', 'common_doubles'],
-  A: ['bull_100', 't20_t19_focus', 'cricket_full_round', 'double_round', 'last_dart_pressure'],
-  AA: ['bull_100', 'weak_cricket_number', 'random_cricket', 'common_doubles', 'no_score_form'],
-  AAA: ['bull_100', 't20_t19_focus', 'random_cricket', 'double_round', 'streak_challenge'],
-  SA: ['bull_100', 'weak_cricket_number', 'random_cricket', 'double_round', 'reset_on_miss'],
+  BB: ['bull_target_30', 't20_t19_focus', 'weak_cricket_number', 'common_doubles', 'no_score_form'],
+  BBB: ['bull_target_30', 'bull_50', 'random_cricket', 't20_t19_focus', 'common_doubles'],
+  A: ['bull_target_50', 'bull_100', 't20_t19_focus', 'double_round', 'last_dart_pressure'],
+  AA: [
+    'bull_target_50',
+    'weak_cricket_number',
+    'random_cricket',
+    'common_doubles',
+    'no_score_form',
+  ],
+  AAA: ['bull_target_50', 't20_t19_focus', 'random_cricket', 'double_round', 'streak_challenge'],
+  SA: ['bull_target_50', 'weak_cricket_number', 'random_cricket', 'double_round', 'reset_on_miss'],
 };
 
 export function getBuiltInDrills() {
@@ -703,13 +1140,13 @@ export function dailyMinimumForLevel(level: PlayerLevel) {
 export function generateTimePreset(level: PlayerLevel, preset: TimePreset) {
   const minutes = preset === 'custom' ? 30 : Number.parseInt(preset, 10);
   if (minutes <= 5) {
-    return ['bull_30', 'cricket_number_15', 'daily_finish_three'].map(toShortPreset);
+    return ['bull_target_10', 'cricket_20_5_marks', 'daily_finish_three'].map(toShortPreset);
   }
   if (minutes <= 10) {
-    return ['warmup_wide_single', 'bull_30', 'cricket_number_15'].map(toShortPreset);
+    return ['warmup_wide_single', 'bull_target_10', 'cricket_20_5_marks'].map(toShortPreset);
   }
   if (minutes <= 15) {
-    return ['warmup_wide_single', 'bull_30', 'cricket_number_15', 'daily_finish_three'].map(
+    return ['warmup_wide_single', 'bull_target_10', 'cricket_20_5_marks', 'daily_finish_three'].map(
       toShortPreset,
     );
   }
@@ -833,7 +1270,22 @@ function drill(
   scoringMode: DrillDefinition['scoringMode'],
   canUsePhoto: boolean,
   canUseVideo: boolean,
+  overrides: Partial<
+    Pick<DrillDefinition, 'inputMode' | 'markMode' | 'targetSuccessCount' | 'completionRule'>
+  > = {},
 ): DrillDefinition {
+  const targetSuccessCount = overrides.targetSuccessCount ?? parseTargetCount(successRule);
+  const completionRule =
+    overrides.completionRule ??
+    (targetSuccessCount
+      ? scoringMode === 'mark'
+        ? targetNumbers.length > 1
+          ? 'all_targets_mark_count'
+          : 'mark_count'
+        : 'bull_count'
+      : totalThrows > 0
+        ? 'fixed_throws'
+        : 'manual');
   return {
     id,
     type,
@@ -853,9 +1305,156 @@ function drill(
     sortOrder,
     successRule,
     scoringMode,
+    inputMode: overrides.inputMode ?? 'round_three_throw',
+    markMode:
+      overrides.markMode ??
+      (scoringMode === 'mark' ? 'cricket' : scoringMode === 'coordinate' ? 'bull_count' : 'none'),
+    targetSuccessCount,
+    completionRule,
     canUsePhoto,
     canUseVideo,
+    instructions: createInstructionDetails({
+      id,
+      category,
+      name,
+      purpose,
+      targetNumbers,
+      totalThrows,
+      rounds,
+      throwsPerRound,
+      successRule,
+      scoringMode,
+      canUsePhoto,
+      canUseVideo,
+      completionRule,
+      targetSuccessCount,
+    }),
   };
+}
+
+function parseTargetCount(successRule: string): number | null {
+  const match = successRule.match(/(\d+)(?:本|マーク)/);
+  return match ? Number.parseInt(match[1]!, 10) : null;
+}
+
+function createInstructionDetails(input: {
+  id: string;
+  category: DrillCategory;
+  name: string;
+  purpose: string;
+  targetNumbers: (number | 'BULL' | string)[];
+  totalThrows: number;
+  rounds: number | null;
+  throwsPerRound: number | null;
+  successRule: string;
+  scoringMode: DrillDefinition['scoringMode'];
+  canUsePhoto: boolean;
+  canUseVideo: boolean;
+  completionRule: DrillCompletionRule;
+  targetSuccessCount: number | null;
+}): DrillInstructionDetails {
+  const targetText = formatTargets(input.targetNumbers);
+  const roundText = input.throwsPerRound
+    ? `${input.throwsPerRound}投を1ラウンド`
+    : '設定した区切り';
+  const fixedFinish =
+    input.totalThrows > 0 ? `${input.totalThrows}投で終了` : '目標達成ラウンドで終了';
+  const common = {
+    shortDescription: input.purpose,
+    preparation: ['狙う場所と入力方式を確認する', '無理のない姿勢でスローラインに立つ'],
+    instructions: [
+      `${targetText}を狙う`,
+      `${roundText}として投げる`,
+      '3投が終わったらラウンド結果をまとめて入力する',
+      '入力内容を確認してラウンドを確定する',
+      '終了条件に達するまで次のラウンドへ進む',
+    ],
+    successCondition: input.successRule,
+    finishCondition:
+      input.completionRule === 'fixed_throws'
+        ? fixedFinish
+        : `${targetText}の累計が${input.targetSuccessCount ?? '設定'}に到達したラウンドで終了`,
+    inputGuide:
+      '標準は3投まとめて入力です。必要に応じて本数入力、3投個別入力、写真判定へ切り替えます。',
+    recordedMetrics: ['総投矢数', 'ラウンド別結果', '命中率またはマーク平均', '中断・再開情報'],
+    commonMistakes: [
+      '投げる途中でスマートフォンを操作してリズムを崩す',
+      '狙いと違う有効ナンバーのキャッチを見落とす',
+    ],
+    cautions: [
+      '痛みや強い疲労がある場合は中断する',
+      '得点だけでなく同じフォームで投げられたかも確認する',
+    ],
+    beginnerTips: ['細いエリアだけでなく、まず対象ナンバー全体へ集める意識で投げる'],
+    photoScoringSupported: input.canUsePhoto,
+    videoRecommended: input.canUseVideo,
+  };
+
+  if (input.category === 'bull') {
+    return {
+      ...common,
+      preparation: ['BULLを狙える立ち位置を確認する', 'INNER/OUTER/MISSの入力方法を確認する'],
+      instructions: [
+        'BULLを狙って3投する',
+        'ダーツを抜く前または抜いた後に盤面を確認する',
+        'INNER本数とOUTER本数を入力する',
+        'MISSは3本から自動計算される',
+        'ラウンドを確定して次の3投へ進む',
+      ],
+      recordedMetrics: [
+        '総投矢数',
+        'INNER BULL数',
+        'OUTER BULL数',
+        'BULL合計',
+        'BULL率',
+        '10投・25投区間',
+        '最大連続BULL',
+      ],
+      commonMistakes: ['BULLに入った本数だけを覚えて後で入力する', 'INNERとOUTERを混同する'],
+      cautions: ['前のダーツへ無理に重ねない', '長時間ドリルでは短い休憩を入れてもよい'],
+    };
+  }
+
+  if (input.category === 'cricket') {
+    return {
+      ...common,
+      preparation: [
+        '現在の狙いと対象ナンバーを確認する',
+        'キャッチ入力が必要な場合は有効対象を確認する',
+      ],
+      instructions: [
+        `${targetText}の現在の推奨狙いへ3投する`,
+        '対象ナンバーのSINGLE/DOUBLE/TRIPLE本数を入力する',
+        '別の有効対象に入った場合はキャッチとして追加する',
+        '対象外に入った投数はその他として保存する',
+        '全対象が目標マークへ到達するまで続ける',
+      ],
+      recordedMetrics: ['総投矢数', '対象別マーク', 'キャッチ', '平均マーク', '0マークラウンド'],
+      commonMistakes: [
+        '狙い以外の有効ナンバーをMISSとして捨てる',
+        'BULLの本数ルールとマークルールを混同する',
+      ],
+      cautions: [
+        'キャッチは断定評価ではなく着弾事実として記録する',
+        '次の推奨狙いを確認してから投げる',
+      ],
+    };
+  }
+
+  if (input.category === 'form') {
+    return {
+      ...common,
+      inputGuide: '得点より本人評価と動画記録を優先します。意識項目は最大2つまでにします。',
+      recordedMetrics: ['セット別本人評価', '意識項目', '感覚メモ', '動画記録の有無'],
+      commonMistakes: ['一度に多くの課題を意識する', '力みの有無を後から思い出そうとする'],
+    };
+  }
+
+  return common;
+}
+
+export function formatTargets(targets: (number | 'BULL' | string)[]) {
+  return targets.length > 0 ? targets.map(String).join('、') : '指定した対象';
 }
 
 function toShortPreset(drillId: string) {
@@ -905,6 +1504,239 @@ function longestStreak(values: boolean[]) {
     }
   }
   return longest;
+}
+
+export function clampBullRound(innerBull: number, outerBull: number) {
+  const inner = Math.max(0, Math.min(3, Math.trunc(innerBull) || 0));
+  const outer = Math.max(0, Math.min(3 - inner, Math.trunc(outerBull) || 0));
+  return {
+    innerBull: inner,
+    outerBull: outer,
+    miss: 3 - inner - outer,
+    bullCount: inner + outer,
+  };
+}
+
+export function createBullRoundThrows(input: {
+  roundNumber: number;
+  overallThrowStart: number;
+  innerBull: number;
+  outerBull: number;
+  inputMethod?: DrillThrowResultInput['inputMethod'];
+}): DrillThrowResultInput[] {
+  const round = clampBullRound(input.innerBull, input.outerBull);
+  const resultTypes = [
+    ...Array.from({ length: round.innerBull }, () => 'INNER_BULL'),
+    ...Array.from({ length: round.outerBull }, () => 'OUTER_BULL'),
+    ...Array.from({ length: round.miss }, () => 'MISS'),
+  ];
+  return resultTypes.map((resultType, index) => {
+    const isInnerBull = resultType === 'INNER_BULL';
+    const isOuterBull = resultType === 'OUTER_BULL';
+    return {
+      roundNumber: input.roundNumber,
+      throwNumber: index + 1,
+      overallThrowNumber: input.overallThrowStart + index + 1,
+      resultType,
+      intendedTarget: 'BULL',
+      targetNumber: 'BULL',
+      actualNumber: isInnerBull || isOuterBull ? 'BULL' : null,
+      segment: resultType,
+      multiplier: isInnerBull ? 2 : isOuterBull ? 1 : 0,
+      score: isInnerBull ? 50 : isOuterBull ? 25 : 0,
+      markCount: isInnerBull || isOuterBull ? 1 : 0,
+      isHit: isInnerBull || isOuterBull,
+      isInnerBull,
+      isOuterBull,
+      targetHit: isInnerBull || isOuterBull,
+      catchHit: false,
+      inputMethod: input.inputMethod ?? 'round_count',
+    };
+  });
+}
+
+export function createCricketRoundThrows(input: {
+  roundNumber: number;
+  overallThrowStart: number;
+  intendedTarget: number | 'BULL';
+  targetHits: { single: number; double: number; triple: number };
+  catches?: { actualNumber: number | 'BULL' | string; multiplier: number; count: number }[];
+  validTargets: (number | 'BULL' | string)[];
+  inputMethod?: DrillThrowResultInput['inputMethod'];
+}): DrillThrowResultInput[] {
+  const validTargetSet = new Set(input.validTargets.map(String));
+  const throws: DrillThrowResultInput[] = [];
+  const add = (
+    actualNumber: number | 'BULL' | string | null,
+    multiplier: number,
+    count: number,
+  ) => {
+    for (let index = 0; index < count && throws.length < 3; index += 1) {
+      const actual = actualNumber ? String(actualNumber) : null;
+      const target = String(input.intendedTarget);
+      const isBullTarget = actual === 'BULL';
+      const markCount =
+        actual && validTargetSet.has(actual)
+          ? actual === 'BULL'
+            ? multiplier === 2
+              ? 2
+              : multiplier === 1
+                ? 1
+                : 0
+            : Math.max(0, Math.min(3, multiplier))
+          : 0;
+      const targetHit = actual === target && markCount > 0;
+      const catchHit = Boolean(actual && actual !== target && validTargetSet.has(actual));
+      throws.push({
+        roundNumber: input.roundNumber,
+        throwNumber: throws.length + 1,
+        overallThrowNumber: input.overallThrowStart + throws.length + 1,
+        resultType: targetHit ? 'TARGET_MARK' : catchHit ? 'CATCH_MARK' : 'MISS',
+        intendedTarget: input.intendedTarget,
+        targetNumber: input.intendedTarget,
+        actualNumber,
+        segment: actual ? `${multiplierLabel(multiplier)}${actual}` : 'MISS',
+        multiplier,
+        score: actual === 'BULL' ? (multiplier === 2 ? 50 : 25) : Number(actual) * multiplier || 0,
+        markCount,
+        isHit: markCount > 0,
+        isInnerBull: isBullTarget && multiplier === 2,
+        isOuterBull: isBullTarget && multiplier === 1,
+        targetHit,
+        catchHit,
+        inputMethod: input.inputMethod ?? 'round_count',
+      });
+    }
+  };
+  add(input.intendedTarget, 1, input.targetHits.single);
+  add(input.intendedTarget, 2, input.targetHits.double);
+  add(input.intendedTarget, 3, input.targetHits.triple);
+  for (const catchInput of input.catches ?? []) {
+    add(catchInput.actualNumber, catchInput.multiplier, catchInput.count);
+  }
+  add(null, 0, 3 - throws.length);
+  return throws;
+}
+
+function multiplierLabel(multiplier: number) {
+  if (multiplier === 3) {
+    return 'T';
+  }
+  if (multiplier === 2) {
+    return 'D';
+  }
+  if (multiplier === 1) {
+    return 'S';
+  }
+  return '';
+}
+
+export function summarizeDrillThrows(throws: DrillThrowResultInput[]): DrillThrowSummary {
+  const sorted = [...throws].sort((a, b) => a.overallThrowNumber - b.overallThrowNumber);
+  const bullByThrow = sorted.map(
+    (throwResult) => throwResult.isInnerBull || throwResult.isOuterBull,
+  );
+  const rounds = new Map<number, DrillThrowResultInput[]>();
+  const targetProgress: Record<string, number> = {};
+  for (const throwResult of sorted) {
+    const round = rounds.get(throwResult.roundNumber) ?? [];
+    round.push(throwResult);
+    rounds.set(throwResult.roundNumber, round);
+    const key = String(throwResult.actualNumber ?? throwResult.targetNumber ?? 'その他');
+    if (throwResult.markCount > 0) {
+      targetProgress[key] = (targetProgress[key] ?? 0) + throwResult.markCount;
+    }
+  }
+  const totalThrows = sorted.length;
+  const innerBull = sorted.filter((throwResult) => throwResult.isInnerBull).length;
+  const outerBull = sorted.filter((throwResult) => throwResult.isOuterBull).length;
+  const bullCount = innerBull + outerBull;
+  const firstHalf = sorted.slice(0, Math.floor(totalThrows / 2));
+  const secondHalf = sorted.slice(Math.floor(totalThrows / 2));
+  const bullRateFor = (items: DrillThrowResultInput[]) =>
+    items.length
+      ? items.filter((throwResult) => throwResult.isInnerBull || throwResult.isOuterBull).length /
+        items.length
+      : null;
+  const firstHalfBullRate = bullRateFor(firstHalf);
+  const secondHalfBullRate = bullRateFor(secondHalf);
+  return {
+    totalThrows,
+    hitCount: sorted.filter((throwResult) => throwResult.isHit).length,
+    markCount: sorted.reduce((sum, throwResult) => sum + throwResult.markCount, 0),
+    innerBull,
+    outerBull,
+    bullCount,
+    bullRate: totalThrows ? bullCount / totalThrows : 0,
+    innerRate: totalThrows ? innerBull / totalThrows : 0,
+    singleCount: sorted.filter((throwResult) => throwResult.multiplier === 1 && throwResult.isHit)
+      .length,
+    doubleCount: sorted.filter((throwResult) => throwResult.multiplier === 2 && throwResult.isHit)
+      .length,
+    tripleCount: sorted.filter((throwResult) => throwResult.multiplier === 3 && throwResult.isHit)
+      .length,
+    longestBullStreak: longestStreak(bullByThrow),
+    longestNoBullStreak: longestStreak(bullByThrow.map((value) => !value)),
+    allBullRounds: [...rounds.values()].filter(
+      (round) =>
+        round.length === 3 &&
+        round.every((throwResult) => throwResult.isInnerBull || throwResult.isOuterBull),
+    ).length,
+    allInnerRounds: [...rounds.values()].filter(
+      (round) => round.length === 3 && round.every((throwResult) => throwResult.isInnerBull),
+    ).length,
+    zeroMarkRounds: [...rounds.values()].filter(
+      (round) => round.reduce((sum, throwResult) => sum + throwResult.markCount, 0) === 0,
+    ).length,
+    tenThrowBullCounts: bucketBullCounts(sorted, 10),
+    twentyFiveThrowBullCounts: bucketBullCounts(sorted, 25),
+    firstHalfBullRate,
+    secondHalfBullRate,
+    fatigueDropCandidate:
+      firstHalfBullRate !== null && secondHalfBullRate !== null
+        ? secondHalfBullRate < firstHalfBullRate
+        : false,
+    targetProgress,
+  };
+}
+
+function bucketBullCounts(throws: DrillThrowResultInput[], bucketSize: number) {
+  const buckets: number[] = [];
+  throws.forEach((throwResult, index) => {
+    const bucketIndex = Math.floor(index / bucketSize);
+    buckets[bucketIndex] = buckets[bucketIndex] ?? 0;
+    if (throwResult.isInnerBull || throwResult.isOuterBull) {
+      buckets[bucketIndex] += 1;
+    }
+  });
+  return buckets;
+}
+
+export function isDrillCompletionReached(
+  definition: Pick<
+    DrillDefinition,
+    'completionRule' | 'targetSuccessCount' | 'totalThrows' | 'targetNumbers'
+  >,
+  summary: DrillThrowSummary,
+) {
+  if (definition.completionRule === 'fixed_throws') {
+    return summary.totalThrows >= definition.totalThrows;
+  }
+  if (definition.completionRule === 'bull_count') {
+    return summary.bullCount >= (definition.targetSuccessCount ?? 0);
+  }
+  if (definition.completionRule === 'mark_count') {
+    return (
+      Math.max(...Object.values(summary.targetProgress), 0) >= (definition.targetSuccessCount ?? 0)
+    );
+  }
+  if (definition.completionRule === 'all_targets_mark_count') {
+    return definition.targetNumbers.every(
+      (target) =>
+        (summary.targetProgress[String(target)] ?? 0) >= (definition.targetSuccessCount ?? 0),
+    );
+  }
+  return false;
 }
 
 function countStreak(history: { date: string; achieved: boolean }[]) {

@@ -90,6 +90,17 @@ export function validatePracticeMenuInput(input: PracticeMenuInput): ValidationR
       repeatWeekdays: normalizeOptionalText(input.repeatWeekdays),
       isAiSuggested: Boolean(input.isAiSuggested),
       sourceAssessmentId: input.sourceAssessmentId ?? null,
+      drillDefinitionId: input.drillDefinitionId ?? null,
+      drillType: input.drillType ?? null,
+      inputMode: input.inputMode ?? null,
+      targetType: input.targetType ?? null,
+      targetNumbers: input.targetNumbers ?? null,
+      totalThrows: input.totalThrows ?? null,
+      targetSuccessCount: input.targetSuccessCount ?? null,
+      scoringMode: input.scoringMode ?? null,
+      markMode: input.markMode ?? null,
+      sourceType: input.sourceType ?? null,
+      sourceId: input.sourceId ?? null,
     },
   };
 }

@@ -29,6 +29,17 @@ export type PracticeMenuInput = {
   repeatWeekdays?: string;
   isAiSuggested?: boolean;
   sourceAssessmentId?: string | null;
+  drillDefinitionId?: string | null;
+  drillType?: string | null;
+  inputMode?: string | null;
+  targetType?: string | null;
+  targetNumbers?: string | null;
+  totalThrows?: number | null;
+  targetSuccessCount?: number | null;
+  scoringMode?: string | null;
+  markMode?: string | null;
+  sourceType?: string | null;
+  sourceId?: string | null;
 };
 
 export type PracticeMenu = {
@@ -50,6 +61,17 @@ export type PracticeMenu = {
   repeatWeekdays: string | null;
   isAiSuggested: boolean;
   sourceAssessmentId: string | null;
+  drillDefinitionId: string | null;
+  drillType: string | null;
+  inputMode: string | null;
+  targetType: string | null;
+  targetNumbers: string | null;
+  totalThrows: number | null;
+  targetSuccessCount: number | null;
+  scoringMode: string | null;
+  markMode: string | null;
+  sourceType: string | null;
+  sourceId: string | null;
 };
 
 export type PracticeProgress = {
