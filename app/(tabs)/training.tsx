@@ -575,6 +575,23 @@ export default function TrainingScreen() {
     }
   }
 
+  function renderDrillCards(category: DrillDefinitionRow['category']) {
+    const drills = drillDefinitions.filter((drill) => drill.category === category);
+    if (drills.length === 0) {
+      return <Text style={{ color: theme.muted, marginTop: 8 }}>該当ドリルはありません。</Text>;
+    }
+    return drills.map((drill) => (
+      <DrillCard
+        key={drill.id}
+        drill={drill}
+        onStart={() => void startStandaloneDrill(drill)}
+        onAdd={() => void addDrillToToday(drill)}
+        onFavorite={() => void toggleDrillFavorite(drill)}
+        theme={theme}
+      />
+    ));
+  }
+
   return (
     <Page
       title="練習ゲーム"
@@ -782,6 +799,56 @@ export default function TrainingScreen() {
                   theme={theme}
                 />
               ))}
+          </Card>
+
+          <Card>
+            <Text style={{ color: theme.text, fontSize: 18, fontWeight: '800' }}>
+              ドリル: シングル
+            </Text>
+            <Text style={{ color: theme.muted, marginTop: 6, lineHeight: 20 }}>
+              大きいシングル一周、3投チャレンジ、奇数・偶数で盤面を広く使う精度を鍛えます。
+            </Text>
+            {renderDrillCards('single')}
+          </Card>
+
+          <Card>
+            <Text style={{ color: theme.text, fontSize: 18, fontWeight: '800' }}>
+              ドリル: ダブル
+            </Text>
+            <Text style={{ color: theme.muted, marginTop: 6, lineHeight: 20 }}>
+              ダブル一周、よく使うダブル、ダブルクローズを一人用反復として記録します。
+            </Text>
+            {renderDrillCards('double')}
+          </Card>
+
+          <Card>
+            <Text style={{ color: theme.text, fontSize: 18, fontWeight: '800' }}>
+              ドリル: トリプル
+            </Text>
+            <Text style={{ color: theme.muted, marginTop: 6, lineHeight: 20 }}>
+              T20・T19集中、トリプル一周、大きいシングル優先モードを選べます。
+            </Text>
+            {renderDrillCards('triple')}
+          </Card>
+
+          <Card>
+            <Text style={{ color: theme.text, fontSize: 18, fontWeight: '800' }}>
+              ドリル: フォーム
+            </Text>
+            <Text style={{ color: theme.muted, marginTop: 6, lineHeight: 20 }}>
+              ノースコアフォーム、70％スロー、フォロースルー静止。動画やChatGPT評価との関連付け前提の記録です。
+            </Text>
+            {renderDrillCards('form')}
+          </Card>
+
+          <Card>
+            <Text style={{ color: theme.text, fontSize: 18, fontWeight: '800' }}>
+              ドリル: プレッシャー
+            </Text>
+            <Text style={{ color: theme.muted, marginTop: 6, lineHeight: 20 }}>
+              最後の1本、連続成功、ミスでリセット。初心者には強制せずB以上の候補として扱います。
+            </Text>
+            {renderDrillCards('pressure')}
           </Card>
 
           <Card>
