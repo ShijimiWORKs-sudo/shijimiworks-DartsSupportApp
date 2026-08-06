@@ -7,7 +7,15 @@ import {
   previewBackupPayload,
   type BackupPayload,
 } from '../src/domain/backup';
-import { buildCsv, buildPcAnalysis, formatJapanDateTime } from '../src/domain/pcAnalysis';
+import {
+  buildCsv,
+  buildPcAnalysis,
+  formatJapanDateTime,
+  generateAnalysisCsv,
+  toCsv,
+  type AnalysisCsvName,
+} from '../src/domain/pcAnalysis';
+import { downloadCsvFile } from '../src/platform/csvDownload.web';
 
 function samplePayload(): BackupPayload {
   const payload: BackupPayload = {
@@ -367,4 +375,120 @@ test('CSV出力は日本語Excel向けBOM付きで生成される', () => {
   const csv = buildCsv('throw_results', samplePayload());
   assert.equal(csv.charCodeAt(0), 0xfeff);
   assert.match(csv, /throw-1/);
+});
+
+test('CSVはBOM、CRLF、カンマ、改行、ダブルクォートを正しく扱う', () => {
+  const csv = toCsv(
+    ['memo', 'line', 'quote'],
+    [{ memo: '右にズレる, 後半改善', line: '前半\n後半', quote: '彼は"OK"' }],
+  );
+
+  assert.equal(csv.charCodeAt(0), 0xfeff);
+  assert.match(csv, /\r\n/);
+  assert.match(csv, /"右にズレる, 後半改善"/);
+  assert.match(csv, /"前半\n後半"/);
+  assert.match(csv, /彼は""OK""/);
+});
+
+test('0件CSVでもヘッダー行だけを出力する', () => {
+  const csv = generateAnalysisCsv('throw_results', {});
+
+  assert.equal(csv.rowCount, 0);
+  assert.equal(csv.fileName, 'throw_results.csv');
+  assert.match(csv.text, /^\uFEFFid,drill_session_id,round_number/);
+  assert.doesNotMatch(csv.text, /\r\n.+/);
+});
+
+test('6種類のCSVはそれぞれ別の内容を生成する', () => {
+  const names: AnalysisCsvName[] = [
+    'session_summary',
+    'round_results',
+    'throw_results',
+    'bull_analysis',
+    'cricket_analysis',
+    'level_history',
+  ];
+  const csvByName = names.map((name) => generateAnalysisCsv(name, samplePayload()).text);
+
+  assert.equal(new Set(csvByName).size, names.length);
+  assert.match(csvByName[0] ?? '', /drillName/);
+  assert.match(csvByName[1] ?? '', /round_number/);
+  assert.match(csvByName[2] ?? '', /overall_throw_number/);
+  assert.match(csvByName[3] ?? '', /legacy_bull_rate/);
+  assert.match(csvByName[4] ?? '', /round_average/);
+  assert.match(csvByName[5] ?? '', /previous_level/);
+});
+
+test('Web CSVダウンロードはBlob、download属性、click、URL破棄を実行する', () => {
+  const originalDocument = globalThis.document;
+  const originalUrl = globalThis.URL;
+  const originalWindow = globalThis.window;
+  const clicked: string[] = [];
+  const appended: unknown[] = [];
+  const revoked: string[] = [];
+  let createdBlob: unknown = null;
+
+  const anchor = {
+    href: '',
+    download: '',
+    style: { display: '' },
+    click() {
+      clicked.push(this.download);
+    },
+    remove() {
+      appended.pop();
+    },
+  };
+
+  Object.defineProperty(globalThis, 'document', {
+    configurable: true,
+    value: {
+      body: {
+        appendChild(element: unknown) {
+          appended.push(element);
+        },
+      },
+      createElement(tag: string) {
+        assert.equal(tag, 'a');
+        return anchor;
+      },
+    },
+  });
+  Object.defineProperty(globalThis, 'URL', {
+    configurable: true,
+    value: {
+      createObjectURL(blob: Blob) {
+        createdBlob = blob;
+        return 'blob:csv-test';
+      },
+      revokeObjectURL(url: string) {
+        revoked.push(url);
+      },
+    },
+  });
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: {
+      setTimeout(callback: () => void) {
+        callback();
+        return 1;
+      },
+    },
+  });
+
+  try {
+    const result = downloadCsvFile('session_summary.csv', 'id\r\n1');
+
+    assert.equal(result.fileName, 'session_summary.csv');
+    assert.ok(createdBlob instanceof Blob);
+    assert.equal(anchor.download, 'session_summary.csv');
+    assert.equal(anchor.href, 'blob:csv-test');
+    assert.deepEqual(clicked, ['session_summary.csv']);
+    assert.equal(appended.length, 0);
+    assert.deepEqual(revoked, ['blob:csv-test']);
+  } finally {
+    Object.defineProperty(globalThis, 'document', { configurable: true, value: originalDocument });
+    Object.defineProperty(globalThis, 'URL', { configurable: true, value: originalUrl });
+    Object.defineProperty(globalThis, 'window', { configurable: true, value: originalWindow });
+  }
 });

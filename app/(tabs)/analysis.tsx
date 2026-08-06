@@ -1,6 +1,6 @@
 import * as Clipboard from 'expo-clipboard';
 import { useFocusEffect } from 'expo-router';
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   Platform,
@@ -14,14 +14,16 @@ import {
 import { Button, Card, EmptyState, Field, Page, Segmented, useTheme } from '../../components/ui';
 import { parseBackupJson, type BackupPreview, type BackupPayload } from '../../src/domain/backup';
 import {
-  buildCsv,
   buildPcAnalysis,
   formatJapanDateTime,
+  generateAnalysisCsv,
   type AnalysisCategory,
+  type AnalysisCsvName,
   type AnalysisRange,
   type ChartPoint,
 } from '../../src/domain/pcAnalysis';
 import { useSupportRepository } from '../../src/features/support/SupportDatabaseProvider';
+import { downloadCsvFile } from '../../src/platform/csvDownload';
 
 const ranges: { label: string; value: AnalysisRange }[] = [
   { label: '今日', value: 'today' },
@@ -75,6 +77,10 @@ export default function AnalysisScreen() {
   const [category, setCategory] = useState<AnalysisCategory>('all');
   const [search, setSearch] = useState('');
   const [sortKey, setSortKey] = useState<'new' | 'old' | 'throws' | 'bull' | 'marks'>('new');
+  const [csvMessage, setCsvMessage] = useState('');
+  const [csvMessageTone, setCsvMessageTone] = useState<'success' | 'error' | 'info'>('info');
+  const [downloadingCsvName, setDownloadingCsvName] = useState<AnalysisCsvName | null>(null);
+  const downloadingCsvRef = useRef<AnalysisCsvName | null>(null);
 
   const isPc = Platform.OS === 'web' && width >= 1024;
   const pcRepo = repository as PcRepository;
@@ -208,12 +214,33 @@ export default function AnalysisScreen() {
     input.click();
   }
 
-  async function copyCsv(name: string) {
-    const csv = pcRepo?.exportAnalysisCsv
-      ? await pcRepo.exportAnalysisCsv(name)
-      : buildCsv(name, payload ?? {});
-    await Clipboard.setStringAsync(csv);
-    Alert.alert('CSVをコピーしました', `${name}.csv をクリップボードへコピーしました。`);
+  function copyCsv(name: AnalysisCsvName) {
+    if (downloadingCsvRef.current) {
+      return;
+    }
+    downloadingCsvRef.current = name;
+    setDownloadingCsvName(name);
+    try {
+      const csv = generateAnalysisCsv(name, payload ?? {});
+      const result = downloadCsvFile(csv.fileName, csv.text);
+      setCsvMessageTone(csv.rowCount === 0 ? 'info' : 'success');
+      setCsvMessage(
+        csv.rowCount === 0
+          ? '対象データがないため、ヘッダーのみのCSVを出力しました。'
+          : `${result.fileName}をダウンロードしました。`,
+      );
+    } catch (error) {
+      if (__DEV__) {
+        console.error(error);
+      }
+      setCsvMessageTone('error');
+      setCsvMessage('CSVのダウンロードに失敗しました。');
+    } finally {
+      setTimeout(() => {
+        downloadingCsvRef.current = null;
+        setDownloadingCsvName(null);
+      }, 300);
+    }
   }
 
   const content = (
@@ -334,7 +361,14 @@ export default function AnalysisScreen() {
             <View style={{ flexDirection: 'row', alignItems: 'flex-start' }}>
               <View style={{ flex: 1.6 }}>{content}</View>
               <View style={{ flex: 1 }}>
-                <SideAnalysis analysis={analysis} importHistory={importHistory} onCsv={copyCsv} />
+                <SideAnalysis
+                  analysis={analysis}
+                  importHistory={importHistory}
+                  csvMessage={csvMessage}
+                  csvMessageTone={csvMessageTone}
+                  downloadingCsvName={downloadingCsvName}
+                  onCsv={copyCsv}
+                />
               </View>
             </View>
           </ScrollView>
@@ -426,13 +460,27 @@ function ChartCard({ title, note, points }: { title: string; note: string; point
 function SideAnalysis({
   analysis,
   importHistory,
+  csvMessage,
+  csvMessageTone,
+  downloadingCsvName,
   onCsv,
 }: {
   analysis: ReturnType<typeof buildPcAnalysis>;
   importHistory: { imported_at: string; added_rows: number; skipped_rows: number }[];
-  onCsv: (name: string) => Promise<void>;
+  csvMessage: string;
+  csvMessageTone: 'success' | 'error' | 'info';
+  downloadingCsvName: AnalysisCsvName | null;
+  onCsv: (name: AnalysisCsvName) => void;
 }) {
   const theme = useTheme();
+  const csvNames: AnalysisCsvName[] = [
+    'session_summary',
+    'round_results',
+    'throw_results',
+    'bull_analysis',
+    'cricket_analysis',
+    'level_history',
+  ];
   return (
     <>
       <Card>
@@ -480,21 +528,31 @@ function SideAnalysis({
       </Card>
       <Card>
         <Text style={{ color: theme.text, fontSize: 18, fontWeight: '800' }}>CSV出力</Text>
-        {[
-          'session_summary',
-          'round_results',
-          'throw_results',
-          'bull_analysis',
-          'cricket_analysis',
-          'level_history',
-        ].map((name) => (
+        {csvNames.map((name) => (
           <Button
             key={name}
-            label={`${name}.csv`}
+            label={downloadingCsvName === name ? `${name}.csv 出力中` : `${name}.csv`}
             variant="secondary"
-            onPress={() => void onCsv(name)}
+            disabled={downloadingCsvName === name}
+            onPress={() => onCsv(name)}
           />
         ))}
+        {csvMessage ? (
+          <Text
+            style={{
+              color:
+                csvMessageTone === 'error'
+                  ? theme.danger
+                  : csvMessageTone === 'success'
+                    ? theme.text
+                    : theme.muted,
+              marginTop: 8,
+              lineHeight: 20,
+            }}
+          >
+            {csvMessage}
+          </Text>
+        ) : null}
       </Card>
       <Card>
         <Text style={{ color: theme.text, fontSize: 18, fontWeight: '800' }}>インポート履歴</Text>

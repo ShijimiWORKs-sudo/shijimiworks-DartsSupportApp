@@ -11,6 +11,7 @@ import {
   type BackupPayload,
   type BackupPreview,
 } from '../domain/backup';
+import { buildCsv } from '../domain/pcAnalysis';
 
 const DB_NAME = 'darts_support_app_pc_analysis';
 const DB_VERSION = 1;
@@ -109,8 +110,7 @@ export function createIndexedDbSupportRepository(): IndexedDbSupportRepository {
 
   async function exportAnalysisCsv(name: string) {
     const payload = (await loadActivePackage()) ?? {};
-    const rows = csvRowsFor(name, payload);
-    return toCsv(rows);
+    return buildCsv(name, payload);
   }
 
   return {
@@ -230,34 +230,4 @@ function put(db: IDBDatabase, storeName: string, value: unknown, key: string): P
     request.onerror = () => reject(request.error);
     request.onsuccess = () => resolve();
   });
-}
-
-function csvRowsFor(name: string, payload: Record<string, unknown>) {
-  if (name === 'throw_results') {
-    return getPayloadRows(payload, 'drill_throw_results');
-  }
-  if (name === 'round_results') {
-    return getPayloadRows(payload, 'drill_rounds');
-  }
-  if (name === 'bull_analysis' || name === 'cricket_analysis') {
-    return getPayloadRows(payload, 'drill_results');
-  }
-  if (name === 'level_history') {
-    return getPayloadRows(payload, 'player_level_history');
-  }
-  return getPayloadRows(payload, 'practice_sessions');
-}
-
-function toCsv(rows: Record<string, unknown>[]) {
-  const columns = [...new Set(rows.flatMap((row) => Object.keys(row)))];
-  const body = [
-    columns.join(','),
-    ...rows.map((row) => columns.map((column) => csvCell(row[column])).join(',')),
-  ].join('\n');
-  return `\uFEFF${body}`;
-}
-
-function csvCell(value: unknown) {
-  const text = value === null || value === undefined ? '' : String(value);
-  return `"${text.replace(/"/g, '""')}"`;
 }

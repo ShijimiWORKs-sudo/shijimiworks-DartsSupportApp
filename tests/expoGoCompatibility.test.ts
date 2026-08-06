@@ -42,6 +42,8 @@ test('実行ソースにlocalhostやWindows絶対パス依存がない', () => {
 test('ネイティブ実行ソースでWeb専用APIを直接参照しない', () => {
   const files = listFiles(['app', 'src', 'components'], ['.ts', '.tsx']);
   const violations = files
+    .filter((file) => !file.endsWith('.web.ts'))
+    .filter((file) => !file.endsWith('.web.tsx'))
     .filter((file) => !file.endsWith('memoryRepository.ts'))
     .filter((file) => !file.endsWith('indexedDbRepository.ts'))
     .flatMap((file) => {
@@ -52,6 +54,26 @@ test('ネイティブ実行ソースでWeb専用APIを直接参照しない', ()
     });
 
   assert.deepEqual(violations, []);
+});
+
+test('ネイティブCSVダウンロード実装でWeb専用APIを直接参照しない', () => {
+  const source = fs.readFileSync(path.join(root, 'src/platform/csvDownload.native.ts'), 'utf8');
+
+  assert.doesNotMatch(source, /document\./);
+  assert.doesNotMatch(source, /window\./);
+  assert.doesNotMatch(source, /createObjectURL/);
+  assert.doesNotMatch(source, /Blob/);
+});
+
+test('PC分析CSV出力は成功、失敗、連打防止の表示を持つ', () => {
+  const source = fs.readFileSync(path.join(root, 'app/(tabs)/analysis.tsx'), 'utf8');
+
+  assert.match(source, /をダウンロードしました。/);
+  assert.match(source, /CSVのダウンロードに失敗しました。/);
+  assert.match(source, /対象データがないため、ヘッダーのみのCSVを出力しました。/);
+  assert.match(source, /console\.error/);
+  assert.match(source, /downloadingCsvRef/);
+  assert.match(source, /disabled=\{downloadingCsvName === name\}/);
 });
 
 test('実機起動用scriptが用意されている', () => {

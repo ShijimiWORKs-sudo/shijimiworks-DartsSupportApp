@@ -3,6 +3,13 @@ import { getRows, type BackupPayload } from './backup';
 export type AnalysisRange = 'today' | '7d' | '30d' | '3m' | '6m' | '1y' | 'all';
 export type AnalysisCategory =
   'all' | 'bull' | 'cricket' | 'single' | 'double' | 'triple' | 'form' | 'level' | 'daily_minimum';
+export type AnalysisCsvName =
+  | 'session_summary'
+  | 'round_results'
+  | 'throw_results'
+  | 'bull_analysis'
+  | 'cricket_analysis'
+  | 'level_history';
 
 export type PcAnalysisSummary = {
   currentLevel: string;
@@ -124,6 +131,93 @@ type BullStats = {
   hasInnerOuterBreakdown: boolean;
 };
 
+const CSV_BOM = '\uFEFF';
+
+const analysisCsvColumns: Record<AnalysisCsvName, string[]> = {
+  session_summary: [
+    'id',
+    'date',
+    'drillName',
+    'level',
+    'target',
+    'totalThrows',
+    'rounds',
+    'bullCount',
+    'bullDisplay',
+    'bullRate',
+    'bullDataKind',
+    'markCount',
+    'achieved',
+    'inputMethod',
+    'dataQualityLabels',
+  ],
+  round_results: [
+    'id',
+    'drill_session_id',
+    'round_number',
+    'target_number',
+    'throws',
+    'hit_count',
+    'mark_count',
+    'inner_bull',
+    'outer_bull',
+    'single_count',
+    'double_count',
+    'triple_count',
+    'created_at',
+    'updated_at',
+  ],
+  throw_results: [
+    'id',
+    'drill_session_id',
+    'round_number',
+    'throw_number',
+    'overall_throw_number',
+    'target_number',
+    'actual_number',
+    'segment',
+    'multiplier',
+    'score',
+    'mark_count',
+    'is_hit',
+    'is_inner_bull',
+    'is_outer_bull',
+    'catch_hit',
+    'created_at',
+  ],
+  bull_analysis: [
+    'id',
+    'drill_session_id',
+    'drill_definition_id',
+    'total_throws',
+    'hit_count',
+    'inner_bull',
+    'outer_bull',
+    'bull_rate',
+    'legacy_bull_count',
+    'legacy_bull_rate',
+    'bull_data_kind',
+    'created_at',
+  ],
+  cricket_analysis: [
+    'id',
+    'drill_session_id',
+    'drill_definition_id',
+    'total_throws',
+    'mark_count',
+    'round_average',
+    'single_count',
+    'double_count',
+    'triple_count',
+    'zero_rounds',
+    'three_plus_mark_rounds',
+    'best_target',
+    'weakest_target',
+    'created_at',
+  ],
+  level_history: ['id', 'previous_level', 'next_level', 'reason', 'created_at'],
+};
+
 export function buildPcAnalysis(
   payload: BackupPayload,
   range: AnalysisRange = 'all',
@@ -201,29 +295,94 @@ export function buildPcAnalysis(
 }
 
 export function buildCsv(name: string, payload: BackupPayload) {
-  const rows =
-    name === 'throw_results'
-      ? getRows(payload.drill_throw_results)
-      : name === 'round_results'
-        ? getRows(payload.drill_rounds)
-        : name === 'level_history'
-          ? getRows(payload.player_level_history)
-          : name === 'bull_analysis' || name === 'cricket_analysis'
-            ? getRows(payload.drill_results)
-            : buildHistory(
-                getRows(payload.drill_results),
-                getRows(payload.training_drill_definitions),
-                getRows(payload.drill_throw_results),
-                getRows(payload.drill_rounds),
-              );
-  const normalizedRows = rows.map((row) => row as Record<string, unknown>);
-  const columns = [...new Set(normalizedRows.flatMap((row) => Object.keys(row)))];
-  return `\uFEFF${[
-    columns.join(','),
-    ...normalizedRows.map((row) =>
-      columns.map((column) => `"${String(row[column] ?? '').replace(/"/g, '""')}"`).join(','),
-    ),
-  ].join('\n')}`;
+  return generateAnalysisCsv(normalizeAnalysisCsvName(name), payload).text;
+}
+
+export function generateAnalysisCsv(name: AnalysisCsvName, payload: BackupPayload) {
+  const rows = csvRowsFor(name, payload);
+  const columns = mergeCsvColumns(analysisCsvColumns[name], rows);
+  return {
+    fileName: `${name}.csv`,
+    rowCount: rows.length,
+    text: toCsv(columns, rows),
+  };
+}
+
+export function toCsv(columns: string[], rows: Record<string, unknown>[]) {
+  const lines = [
+    columns.map((column) => csvCell(column)).join(','),
+    ...rows.map((row) => columns.map((column) => csvCell(row[column])).join(',')),
+  ];
+  return `${CSV_BOM}${lines.join('\r\n')}`;
+}
+
+export function csvCell(value: unknown) {
+  const text = value === null || value === undefined ? '' : String(value);
+  const escaped = text.replace(/"/g, '""');
+  return /[",\r\n]/.test(escaped) ? `"${escaped}"` : escaped;
+}
+
+function normalizeAnalysisCsvName(name: string): AnalysisCsvName {
+  if (isAnalysisCsvName(name)) {
+    return name;
+  }
+  return 'session_summary';
+}
+
+function isAnalysisCsvName(name: string): name is AnalysisCsvName {
+  return Object.hasOwn(analysisCsvColumns, name);
+}
+
+function csvRowsFor(name: AnalysisCsvName, payload: BackupPayload): Record<string, unknown>[] {
+  if (name === 'session_summary') {
+    return buildHistory(
+      getRows(payload.drill_results),
+      getRows(payload.training_drill_definitions),
+      getRows(payload.drill_throw_results),
+      getRows(payload.drill_rounds),
+    ).map((row) => ({
+      ...row,
+      dataQualityLabels: row.dataQualityLabels.join(' / '),
+    }));
+  }
+  if (name === 'round_results') {
+    return getRows(payload.drill_rounds);
+  }
+  if (name === 'throw_results') {
+    return getRows(payload.drill_throw_results);
+  }
+  if (name === 'level_history') {
+    return getRows(payload.player_level_history);
+  }
+  if (name === 'bull_analysis') {
+    const definitions = getRows(payload.training_drill_definitions);
+    const throwsBySession = groupRowsBy(getRows(payload.drill_throw_results), 'drill_session_id');
+    return getRows(payload.drill_results).map((row) => {
+      const definition = definitions.find((candidate) => candidate.id === row.drill_definition_id);
+      const stats = calculateBullStats(
+        row,
+        definition,
+        throwsBySession.get(stringValue(row.drill_session_id, '')) ?? [],
+      );
+      return {
+        ...row,
+        legacy_bull_count: stats.kind === 'legacy_summary' ? stats.bullCount : '',
+        legacy_bull_rate: stats.kind === 'legacy_summary' ? stats.bullRate : '',
+        bull_data_kind: stats.kind,
+      };
+    });
+  }
+  return getRows(payload.drill_results);
+}
+
+function mergeCsvColumns(defaultColumns: string[], rows: Record<string, unknown>[]) {
+  const columns = new Set(defaultColumns);
+  for (const row of rows) {
+    for (const column of Object.keys(row)) {
+      columns.add(column);
+    }
+  }
+  return [...columns];
 }
 
 export function formatJapanDateTime(value: unknown) {
