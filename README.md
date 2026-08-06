@@ -108,4 +108,6 @@ npm run start:clear
 
 iPhoneでの確認項目は [docs/qa/EXPO_GO_IPHONE_QA.md](docs/qa/EXPO_GO_IPHONE_QA.md) にあります。
 
+現在状況: 2026-08-06に、iPhone実機、Expo Go、Expo SDK 54、iPhone縦画面、LAN接続で主要フローの実機確認が完了しています。
+
 問題が起きた場合は、Expo Goの赤いエラー画面、PC側Metroターミナルのエラー、起動方式、iPhone機種、iOSバージョン、Expo Goバージョン、Wi-Fi/VPN状態、発生画面、再現手順を記録してください。
