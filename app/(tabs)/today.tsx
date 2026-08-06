@@ -1,4 +1,4 @@
-import { useFocusEffect } from 'expo-router';
+import { useFocusEffect, useRouter } from 'expo-router';
 import { useCallback, useMemo, useState } from 'react';
 import { Alert, KeyboardAvoidingView, Modal, Platform, ScrollView, Text, View } from 'react-native';
 
@@ -49,6 +49,7 @@ const initialForm = (): PracticeMenuInput => ({
 
 export default function TodayScreen() {
   const theme = useTheme();
+  const router = useRouter();
   const { repository, unavailableView } = useSupportRepository();
   const [items, setItems] = useState<DailyPracticeItemRow[]>([]);
   const [templates, setTemplates] = useState<DailyPracticeItemRow[]>([]);
@@ -143,6 +144,16 @@ export default function TodayScreen() {
 
   async function start(item: DailyPracticeItemRow) {
     try {
+      if (item.drillDefinitionId) {
+        const drillSessionId = await repo.startDrillSession(item.drillDefinitionId, null);
+        await repo.setItemStatus(item.id, 'in_progress');
+        await reload();
+        router.push({
+          pathname: '/training',
+          params: { drillSessionId },
+        });
+        return;
+      }
       const sessionId = await repo.startSession(item);
       await reload();
       const session = (await repo.listSessions()).find((candidate) => candidate.id === sessionId);

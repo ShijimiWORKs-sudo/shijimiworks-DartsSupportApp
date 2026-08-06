@@ -1,6 +1,6 @@
-import { useFocusEffect } from 'expo-router';
+import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Alert,
   Image,
@@ -35,7 +35,14 @@ import type {
   TrainingThrowRow,
   RecommendedDrillRow,
 } from '../../src/db/repository';
-import type { TimePreset } from '../../src/domain/drills';
+import {
+  clampBullRound,
+  createBullRoundThrows,
+  createCricketRoundThrows,
+  formatTargets,
+  summarizeDrillThrows,
+  type TimePreset,
+} from '../../src/domain/drills';
 import {
   TRAINING_GAMES,
   calculateCricketMark,
@@ -54,6 +61,8 @@ const todayIso = () => new Date().toISOString().slice(0, 10);
 
 export default function TrainingScreen() {
   const theme = useTheme();
+  const router = useRouter();
+  const params = useLocalSearchParams<{ drillSessionId?: string }>();
   const { repository, unavailableView } = useSupportRepository();
   const [profile, setProfile] = useState<SkillProfileRow | null>(null);
   const [history, setHistory] = useState<LevelHistoryRow[]>([]);
@@ -75,6 +84,22 @@ export default function TrainingScreen() {
   const [throwForm, setThrowForm] = useState({ score: '', segment: '', multiplier: '1' });
   const [levelCheckOpen, setLevelCheckOpen] = useState(false);
   const [customOpen, setCustomOpen] = useState(false);
+  const [instructionDrill, setInstructionDrill] = useState<DrillDefinitionRow | null>(null);
+  const [activeDrillInput, setActiveDrillInput] = useState<{
+    session: DrillSessionRow;
+    definition: DrillDefinitionRow;
+  } | null>(null);
+  const [roundInputMode, setRoundInputMode] = useState<'summary' | 'detail'>('summary');
+  const [bullRound, setBullRound] = useState({ inner: 0, outer: 0 });
+  const [cricketRound, setCricketRound] = useState({
+    single: 0,
+    double: 0,
+    triple: 0,
+    catchNumber: '18',
+    catchMultiplier: '3',
+    catchCount: 0,
+  });
+  const [lastRoundMessage, setLastRoundMessage] = useState('');
   const [photoOpen, setPhotoOpen] = useState(false);
   const [photoUri, setPhotoUri] = useState('');
   const [photoStep, setPhotoStep] = useState<'center' | 'twenty' | 'outer' | 'throws'>('center');
@@ -108,6 +133,8 @@ export default function TrainingScreen() {
     isFavorite: false,
     canUsePhoto: false,
     canUseVideo: false,
+    instructions: '',
+    inputGuide: '',
   });
   const [drillResultForm, setDrillResultForm] = useState({
     sessionId: '',
@@ -184,6 +211,22 @@ export default function TrainingScreen() {
     }, [reload]),
   );
 
+  useEffect(() => {
+    const sessionId = Array.isArray(params.drillSessionId)
+      ? params.drillSessionId[0]
+      : params.drillSessionId;
+    if (!sessionId || drillSessions.length === 0 || drillDefinitions.length === 0) {
+      return;
+    }
+    const session = drillSessions.find((candidate) => candidate.id === sessionId);
+    const definition = drillDefinitions.find(
+      (candidate) => candidate.id === session?.drill_definition_id,
+    );
+    if (session && definition && session.status !== 'completed') {
+      openDrillRoundInput(session, definition);
+    }
+  }, [params.drillSessionId, drillSessions, drillDefinitions]);
+
   const activeThrows = useMemo(
     () => (activeGame ? (throwsByGame[activeGame.id] ?? []) : []),
     [activeGame, throwsByGame],
@@ -195,6 +238,35 @@ export default function TrainingScreen() {
     return unavailableView;
   }
   const repo = repository;
+
+  function openDrillRoundInput(session: DrillSessionRow, definition: DrillDefinitionRow) {
+    setActiveDrillInput({ session, definition });
+    setRoundInputMode('summary');
+    setBullRound({ inner: 0, outer: 0 });
+    setCricketRound({
+      single: 0,
+      double: 0,
+      triple: 0,
+      catchNumber: firstCricketCatchTarget(definition),
+      catchMultiplier: '3',
+      catchCount: 0,
+    });
+    setLastRoundMessage('');
+  }
+
+  async function openDrillSession(sessionId: string) {
+    const [sessions, definitions] = await Promise.all([
+      repo.listDrillSessions(),
+      repo.listDrillDefinitions(),
+    ]);
+    const session = sessions.find((candidate) => candidate.id === sessionId);
+    const definition = definitions.find(
+      (candidate) => candidate.id === session?.drill_definition_id,
+    );
+    if (session && definition) {
+      openDrillRoundInput(session, definition);
+    }
+  }
 
   async function startGame(gameType: TrainingGameType) {
     try {
@@ -271,6 +343,7 @@ export default function TrainingScreen() {
         durationMinutes: String(item.estimated_minutes || ''),
       });
       await reload();
+      await openDrillSession(sessionId);
     } catch (error) {
       Alert.alert(
         '開始できませんでした',
@@ -339,6 +412,80 @@ export default function TrainingScreen() {
     }
   }
 
+  async function saveRoundInput() {
+    if (!activeDrillInput) {
+      return;
+    }
+    const { session, definition } = activeDrillInput;
+    const existingThrows = await repo.listDrillThrowResults(session.id);
+    const nextOverall = existingThrows.length;
+    const roundNumber = Math.floor(nextOverall / 3) + 1;
+    const throws =
+      definition.category === 'bull'
+        ? createBullRoundThrows({
+            roundNumber,
+            overallThrowStart: nextOverall,
+            innerBull: bullRound.inner,
+            outerBull: bullRound.outer,
+          })
+        : createCricketRoundThrows({
+            roundNumber,
+            overallThrowStart: nextOverall,
+            intendedTarget: currentIntendedTarget(definition, existingThrows),
+            targetHits: {
+              single: cricketRound.single,
+              double: cricketRound.double,
+              triple: cricketRound.triple,
+            },
+            catches:
+              cricketRound.catchCount > 0
+                ? [
+                    {
+                      actualNumber: parseCricketTarget(cricketRound.catchNumber),
+                      multiplier: Number.parseInt(cricketRound.catchMultiplier, 10) || 1,
+                      count: cricketRound.catchCount,
+                    },
+                  ]
+                : [],
+            validTargets: parseDrillTargets(definition),
+          });
+    try {
+      await repo.recordDrillRound(session.id, throws);
+      const summary = summarizeDrillThrows(throws);
+      setLastRoundMessage(
+        definition.category === 'bull'
+          ? `このラウンド: BULL ${summary.bullCount}本を記録しました`
+          : `このラウンド: ${summary.markCount}マークを記録しました`,
+      );
+      setBullRound({ inner: 0, outer: 0 });
+      setCricketRound({
+        single: 0,
+        double: 0,
+        triple: 0,
+        catchNumber: firstCricketCatchTarget(definition),
+        catchMultiplier: '3',
+        catchCount: 0,
+      });
+      await reload();
+      await openDrillSession(session.id);
+    } catch (error) {
+      Alert.alert(
+        '保存できませんでした',
+        error instanceof Error ? error.message : '不明なエラーです。',
+      );
+    }
+  }
+
+  async function undoDrillRound() {
+    if (!activeDrillInput) {
+      return;
+    }
+    await repo.undoLastDrillRound(activeDrillInput.session.id);
+    await reload();
+    await openDrillSession(activeDrillInput.session.id);
+    setLastRoundMessage('直前ラウンドを戻しました');
+  }
+
   async function startStandaloneDrill(drill: DrillDefinitionRow) {
     try {
       const sessionId = await repo.startDrillSession(drill.id, null);
@@ -385,10 +532,22 @@ export default function TrainingScreen() {
         repeatWeekdays: null,
         isAiSuggested: false,
         sourceAssessmentId: null,
+        drillDefinitionId: drill.id,
+        drillType: drill.drill_type,
+        inputMode: drill.input_mode ?? 'round_three_throw',
+        targetType: 'number',
+        targetNumbers: drill.target_numbers,
+        totalThrows: drill.total_throws,
+        targetSuccessCount: drill.target_success_count ?? null,
+        scoringMode: drill.scoring_mode,
+        markMode: drill.mark_mode ?? null,
+        sourceType: 'drill_library',
+        sourceId: drill.id,
       },
       false,
     );
     Alert.alert('今日へ追加しました', drill.name);
+    router.push('/today');
   }
 
   async function toggleDrillFavorite(drill: DrillDefinitionRow) {
@@ -433,6 +592,8 @@ export default function TrainingScreen() {
       isFavorite: customDrill.isFavorite,
       canUsePhoto: customDrill.canUsePhoto,
       canUseVideo: customDrill.canUseVideo,
+      instructions: customDrill.instructions,
+      inputGuide: customDrill.inputGuide,
     });
     setCustomOpen(false);
     setCustomDrill({
@@ -452,6 +613,8 @@ export default function TrainingScreen() {
       isFavorite: false,
       canUsePhoto: false,
       canUseVideo: false,
+      instructions: '',
+      inputGuide: '',
     });
     await reload();
     Alert.alert('保存しました', 'カスタム練習を作成しました。');
@@ -642,6 +805,17 @@ export default function TrainingScreen() {
         repeatWeekdays: null,
         isAiSuggested: false,
         sourceAssessmentId: null,
+        drillDefinitionId: null,
+        drillType: null,
+        inputMode: null,
+        targetType: null,
+        targetNumbers: null,
+        totalThrows: null,
+        targetSuccessCount: null,
+        scoringMode: null,
+        markMode: null,
+        sourceType: 'level_recommendation',
+        sourceId: null,
       },
       false,
     );
@@ -680,6 +854,7 @@ export default function TrainingScreen() {
         onStart={() => void startStandaloneDrill(drill)}
         onAdd={() => void addDrillToToday(drill)}
         onFavorite={() => void toggleDrillFavorite(drill)}
+        onInstructions={() => setInstructionDrill(drill)}
         theme={theme}
       />
     ));
@@ -868,6 +1043,7 @@ export default function TrainingScreen() {
                   onStart={() => void startStandaloneDrill(drill)}
                   onAdd={() => void addDrillToToday(drill)}
                   onFavorite={() => void toggleDrillFavorite(drill)}
+                  onInstructions={() => setInstructionDrill(drill)}
                   theme={theme}
                 />
               ))}
@@ -889,6 +1065,7 @@ export default function TrainingScreen() {
                   onStart={() => void startStandaloneDrill(drill)}
                   onAdd={() => void addDrillToToday(drill)}
                   onFavorite={() => void toggleDrillFavorite(drill)}
+                  onInstructions={() => setInstructionDrill(drill)}
                   theme={theme}
                 />
               ))}
@@ -961,6 +1138,7 @@ export default function TrainingScreen() {
                   onStart={() => void startStandaloneDrill(drill)}
                   onAdd={() => void addDrillToToday(drill)}
                   onFavorite={() => void toggleDrillFavorite(drill)}
+                  onInstructions={() => setInstructionDrill(drill)}
                   theme={theme}
                 />
               ))}
@@ -1270,6 +1448,36 @@ export default function TrainingScreen() {
         </Page>
       </Modal>
 
+      <InstructionModal
+        drill={instructionDrill}
+        theme={theme}
+        onClose={() => setInstructionDrill(null)}
+        onStart={(drill) => {
+          setInstructionDrill(null);
+          void startStandaloneDrill(drill);
+        }}
+      />
+
+      <RoundDrillInputModal
+        active={activeDrillInput}
+        bullRound={bullRound}
+        cricketRound={cricketRound}
+        lastMessage={lastRoundMessage}
+        mode={roundInputMode}
+        theme={theme}
+        onBullChange={setBullRound}
+        onCricketChange={setCricketRound}
+        onModeChange={setRoundInputMode}
+        onSave={() => void saveRoundInput()}
+        onUndo={() => void undoDrillRound()}
+        onPause={() => {
+          if (activeDrillInput) {
+            void toggleDrillPause(activeDrillInput.session);
+          }
+        }}
+        onClose={() => setActiveDrillInput(null)}
+      />
+
       <Modal visible={customOpen} animationType="slide" onRequestClose={() => setCustomOpen(false)}>
         <Page
           title="カスタム練習"
@@ -1333,6 +1541,18 @@ export default function TrainingScreen() {
                 label="成功条件"
                 value={customDrill.successRule}
                 onChangeText={(successRule) => setCustomDrill({ ...customDrill, successRule })}
+              />
+              <Field
+                label="やり方"
+                multiline
+                value={customDrill.instructions}
+                onChangeText={(instructions) => setCustomDrill({ ...customDrill, instructions })}
+              />
+              <Field
+                label="アプリへの入力方法"
+                multiline
+                value={customDrill.inputGuide}
+                onChangeText={(inputGuide) => setCustomDrill({ ...customDrill, inputGuide })}
               />
               <Field
                 label="得点/マーク方式"
@@ -1568,17 +1788,473 @@ export function cricketMarksForThrow(segment: number | 'BULL' | 'OUT', multiplie
   return calculateCricketMark(multiplier, segment);
 }
 
+function InstructionModal({
+  drill,
+  theme,
+  onClose,
+  onStart,
+}: {
+  drill: DrillDefinitionRow | null;
+  theme: ReturnType<typeof useTheme>;
+  onClose: () => void;
+  onStart: (drill: DrillDefinitionRow) => void;
+}) {
+  const detail = drill ? drillInstructionDetail(drill) : null;
+  return (
+    <Modal visible={Boolean(drill)} animationType="slide" onRequestClose={onClose}>
+      <Page title={drill?.name ?? 'やり方'} subtitle="練習の目的、狙い、入力方法を確認します。">
+        <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 64 }}>
+          {drill && detail ? (
+            <>
+              <Card style={{ marginHorizontal: 0 }}>
+                <Text style={{ color: theme.text, fontSize: 18, fontWeight: '800' }}>
+                  {drill.name}
+                </Text>
+                <Text style={{ color: theme.muted, marginTop: 6, lineHeight: 20 }}>
+                  目的: {detail.shortDescription || drill.purpose}
+                </Text>
+                <Text style={{ color: theme.muted, marginTop: 4, lineHeight: 20 }}>
+                  対象レベル: {drill.target_level_min}-{drill.target_level_max} / 目安:{' '}
+                  {drill.estimated_minutes}分 / 合計投数:{' '}
+                  {drill.total_throws > 0 ? `${drill.total_throws}投` : '目標達成まで'}
+                </Text>
+                <Text style={{ color: theme.text, marginTop: 6, lineHeight: 20 }}>
+                  狙う場所: {formatTargets(parseDrillTargets(drill))}
+                </Text>
+              </Card>
+              <InstructionSection title="準備" items={detail.preparation} theme={theme} />
+              <InstructionSection title="実施手順" items={detail.instructions} theme={theme} />
+              <InstructionSection
+                title="成功条件"
+                items={[detail.successCondition || drill.success_rule || 'ユーザー設定に従う']}
+                theme={theme}
+              />
+              <InstructionSection title="終了条件" items={[detail.finishCondition]} theme={theme} />
+              <InstructionSection
+                title="アプリへの入力方法"
+                items={[detail.inputGuide]}
+                theme={theme}
+              />
+              <InstructionSection
+                title="保存される成績"
+                items={detail.recordedMetrics}
+                theme={theme}
+              />
+              <InstructionSection
+                title="よくある間違い"
+                items={detail.commonMistakes}
+                theme={theme}
+              />
+              <InstructionSection title="練習時の注意点" items={detail.cautions} theme={theme} />
+              <InstructionSection
+                title="初心者向けのコツ"
+                items={detail.beginnerTips}
+                theme={theme}
+              />
+              <Card style={{ marginHorizontal: 0 }}>
+                <Text style={{ color: theme.text, lineHeight: 20 }}>
+                  写真判定: {detail.photoScoringSupported ? '利用できます' : '対象外です'} /
+                  動画記録: {detail.videoRecommended ? '推奨します' : '任意です'}
+                </Text>
+                <Button label="開始" onPress={() => onStart(drill)} />
+                <Button label="閉じる" variant="ghost" onPress={onClose} />
+              </Card>
+            </>
+          ) : null}
+        </ScrollView>
+      </Page>
+    </Modal>
+  );
+}
+
+function InstructionSection({
+  title,
+  items,
+  theme,
+}: {
+  title: string;
+  items: string[];
+  theme: ReturnType<typeof useTheme>;
+}) {
+  return (
+    <Card style={{ marginHorizontal: 0 }}>
+      <Text style={{ color: theme.text, fontSize: 16, fontWeight: '800' }}>{title}</Text>
+      {items.filter(Boolean).map((item, index) => (
+        <Text
+          key={`${title}-${index}`}
+          style={{ color: theme.muted, marginTop: 6, lineHeight: 20 }}
+        >
+          {items.length > 1 ? `${index + 1}. ` : ''}
+          {item}
+        </Text>
+      ))}
+    </Card>
+  );
+}
+
+function RoundDrillInputModal({
+  active,
+  bullRound,
+  cricketRound,
+  lastMessage,
+  mode,
+  theme,
+  onBullChange,
+  onCricketChange,
+  onModeChange,
+  onSave,
+  onUndo,
+  onPause,
+  onClose,
+}: {
+  active: { session: DrillSessionRow; definition: DrillDefinitionRow } | null;
+  bullRound: { inner: number; outer: number };
+  cricketRound: {
+    single: number;
+    double: number;
+    triple: number;
+    catchNumber: string;
+    catchMultiplier: string;
+    catchCount: number;
+  };
+  lastMessage: string;
+  mode: 'summary' | 'detail';
+  theme: ReturnType<typeof useTheme>;
+  onBullChange: (value: { inner: number; outer: number }) => void;
+  onCricketChange: (value: typeof cricketRound) => void;
+  onModeChange: (value: 'summary' | 'detail') => void;
+  onSave: () => void;
+  onUndo: () => void;
+  onPause: () => void;
+  onClose: () => void;
+}) {
+  const definition = active?.definition;
+  const session = active?.session;
+  const targets = definition ? parseDrillTargets(definition) : [];
+  const bull = clampBullRound(bullRound.inner, bullRound.outer);
+  const cricketUsed =
+    cricketRound.single + cricketRound.double + cricketRound.triple + cricketRound.catchCount;
+  const cricketMiss = Math.max(0, 3 - cricketUsed);
+  const intendedTarget = definition && session ? currentIntendedTarget(definition, []) : 'BULL';
+
+  return (
+    <Modal visible={Boolean(active)} animationType="slide" onRequestClose={onClose}>
+      <Page title={definition?.name ?? 'ラウンド入力'} subtitle="3投後にまとめて入力します。">
+        <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 90 }}>
+          {definition && session ? (
+            <>
+              <Card style={{ marginHorizontal: 0 }}>
+                <Text style={{ color: theme.text, fontSize: 20, fontWeight: '900' }}>
+                  {definition.name}
+                </Text>
+                <Text style={{ color: theme.muted, marginTop: 6, lineHeight: 20 }}>
+                  現在の狙い: {String(intendedTarget)} / 次の狙い:{' '}
+                  {String(nextDrillTarget(definition, intendedTarget))}
+                </Text>
+                <Text style={{ color: theme.text, marginTop: 6, fontSize: 17, fontWeight: '800' }}>
+                  ラウンド {session.current_round} / 現在まで{' '}
+                  {Math.max(0, session.current_round - 1) * 3 + session.current_throw}投
+                </Text>
+                <Text style={{ color: theme.muted, marginTop: 4, lineHeight: 20 }}>
+                  成功条件: {definition.success_rule ?? 'ユーザー設定に従う'}
+                </Text>
+                <Text style={{ color: theme.muted, marginTop: 4, lineHeight: 20 }}>
+                  入力方法: 3投を投げ終えてから、このラウンドの結果をまとめて確定します。
+                </Text>
+              </Card>
+
+              <Segmented<'summary' | 'detail'>
+                value={mode}
+                onChange={onModeChange}
+                options={[
+                  { label: '本数だけ入力', value: 'summary' },
+                  { label: '3投個別入力', value: 'detail' },
+                ]}
+              />
+
+              {definition.category === 'bull' ? (
+                <Card style={{ marginHorizontal: 0 }}>
+                  <Text style={{ color: theme.text, fontSize: 18, fontWeight: '800' }}>
+                    今回の3投
+                  </Text>
+                  <CounterRow
+                    label="INNER BULL"
+                    value={bull.innerBull}
+                    theme={theme}
+                    onChange={(next) =>
+                      onBullChange({
+                        inner: clampBullRound(next, bull.outerBull).innerBull,
+                        outer: clampBullRound(next, bull.outerBull).outerBull,
+                      })
+                    }
+                  />
+                  <CounterRow
+                    label="OUTER BULL"
+                    value={bull.outerBull}
+                    theme={theme}
+                    onChange={(next) =>
+                      onBullChange({
+                        inner: clampBullRound(bull.innerBull, next).innerBull,
+                        outer: clampBullRound(bull.innerBull, next).outerBull,
+                      })
+                    }
+                  />
+                  <Text style={{ color: theme.text, marginTop: 8, lineHeight: 22 }}>
+                    MISS {bull.miss} / ラウンドBULL {bull.bullCount}
+                  </Text>
+                  {mode === 'detail' ? (
+                    <Text style={{ color: theme.muted, marginTop: 6, lineHeight: 20 }}>
+                      3投個別入力でも、確定時はINNER/OUTER/MISSの3本分として保存します。
+                    </Text>
+                  ) : null}
+                </Card>
+              ) : (
+                <Card style={{ marginHorizontal: 0 }}>
+                  <Text style={{ color: theme.text, fontSize: 18, fontWeight: '800' }}>
+                    対象ナンバーへの結果
+                  </Text>
+                  <Text style={{ color: theme.muted, marginTop: 4 }}>
+                    有効対象: {formatTargets(targets)}
+                  </Text>
+                  <CounterRow
+                    label="SINGLE"
+                    value={cricketRound.single}
+                    theme={theme}
+                    onChange={(single) =>
+                      onCricketChange(limitCricketRound({ ...cricketRound, single }))
+                    }
+                  />
+                  <CounterRow
+                    label="DOUBLE"
+                    value={cricketRound.double}
+                    theme={theme}
+                    onChange={(double) =>
+                      onCricketChange(limitCricketRound({ ...cricketRound, double }))
+                    }
+                  />
+                  <CounterRow
+                    label="TRIPLE"
+                    value={cricketRound.triple}
+                    theme={theme}
+                    onChange={(triple) =>
+                      onCricketChange(limitCricketRound({ ...cricketRound, triple }))
+                    }
+                  />
+                  <Field
+                    label="キャッチ着弾ナンバー"
+                    value={cricketRound.catchNumber}
+                    onChangeText={(catchNumber) =>
+                      onCricketChange({ ...cricketRound, catchNumber })
+                    }
+                  />
+                  <Field
+                    label="キャッチ倍率 1/2/3"
+                    keyboardType="number-pad"
+                    value={cricketRound.catchMultiplier}
+                    onChangeText={(catchMultiplier) =>
+                      onCricketChange({ ...cricketRound, catchMultiplier })
+                    }
+                  />
+                  <CounterRow
+                    label="キャッチ本数"
+                    value={cricketRound.catchCount}
+                    theme={theme}
+                    onChange={(catchCount) =>
+                      onCricketChange(limitCricketRound({ ...cricketRound, catchCount }))
+                    }
+                  />
+                  <Text style={{ color: theme.text, marginTop: 8, lineHeight: 22 }}>
+                    その他 {cricketMiss}投 / 今回の対象マーク{' '}
+                    {cricketRound.single + cricketRound.double * 2 + cricketRound.triple * 3}
+                  </Text>
+                </Card>
+              )}
+
+              {lastMessage ? (
+                <Text style={{ color: theme.accent, fontWeight: '800', marginBottom: 8 }}>
+                  {lastMessage}
+                </Text>
+              ) : null}
+              <Button label="このラウンドを確定" onPress={onSave} />
+              <Button label="直前ラウンドを戻す" variant="secondary" onPress={onUndo} />
+              <Button
+                label={session.status === 'paused' ? '再開' : '一時停止'}
+                variant="ghost"
+                onPress={onPause}
+              />
+              <Button label="閉じる" variant="ghost" onPress={onClose} />
+            </>
+          ) : null}
+        </ScrollView>
+      </Page>
+    </Modal>
+  );
+}
+
+function CounterRow({
+  label,
+  value,
+  theme,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  theme: ReturnType<typeof useTheme>;
+  onChange: (value: number) => void;
+}) {
+  return (
+    <View style={{ marginTop: 10 }}>
+      <Text style={{ color: theme.text, fontWeight: '800' }}>{label}</Text>
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, marginTop: 4 }}>
+        <Button label="-" variant="secondary" onPress={() => onChange(Math.max(0, value - 1))} />
+        <Text
+          style={{
+            color: theme.text,
+            fontSize: 22,
+            fontWeight: '900',
+            minWidth: 28,
+            textAlign: 'center',
+          }}
+        >
+          {value}
+        </Text>
+        <Button label="+" variant="secondary" onPress={() => onChange(value + 1)} />
+      </View>
+    </View>
+  );
+}
+
+function drillInstructionDetail(drill: DrillDefinitionRow) {
+  return {
+    shortDescription: drill.short_description ?? drill.purpose,
+    preparation: parseStringArray(drill.preparation_json, ['狙う場所と入力方法を確認する']),
+    instructions: parseStringArray(drill.instructions_json, [
+      '3投を1ラウンドとして投げる',
+      'ラウンド終了後に結果をまとめて入力する',
+    ]),
+    successCondition: drill.success_condition ?? drill.success_rule ?? 'ユーザー設定に従う',
+    finishCondition:
+      drill.finish_condition ??
+      (drill.total_throws > 0 ? `${drill.total_throws}投で終了` : '目標達成ラウンドで終了'),
+    inputGuide: drill.input_guide ?? '3投まとめて入力します。',
+    recordedMetrics: parseStringArray(drill.recorded_metrics_json, ['総投矢数', 'ラウンド別結果']),
+    commonMistakes: parseStringArray(drill.common_mistakes_json, ['後でまとめて思い出そうとする']),
+    cautions: parseStringArray(drill.cautions_json, ['痛みや強い疲労がある場合は中断する']),
+    beginnerTips: parseStringArray(drill.beginner_tips_json, ['まず対象へ大きく集める']),
+    photoScoringSupported: Boolean(drill.can_use_photo),
+    videoRecommended: Boolean(drill.can_use_video),
+  };
+}
+
+function parseStringArray(value: string | null | undefined, fallback: string[]) {
+  if (!value) {
+    return fallback;
+  }
+  try {
+    const parsed = JSON.parse(value);
+    if (Array.isArray(parsed) && parsed.every((item) => typeof item === 'string')) {
+      return parsed.length > 0 ? parsed : fallback;
+    }
+  } catch {
+    return value
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+  }
+  return fallback;
+}
+
+function parseDrillTargets(drill: DrillDefinitionRow): (number | 'BULL' | string)[] {
+  if (!drill.target_numbers) {
+    return [];
+  }
+  try {
+    const parsed = JSON.parse(drill.target_numbers);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return drill.target_numbers
+      .split(',')
+      .map((target) => target.trim())
+      .filter(Boolean);
+  }
+}
+
+function currentIntendedTarget(
+  drill: DrillDefinitionRow,
+  throws: { actual_number?: string | null; mark_count?: number }[],
+): number | 'BULL' {
+  const targets = parseDrillTargets(drill).filter(
+    (target): target is number | 'BULL' => target === 'BULL' || Number.isFinite(Number(target)),
+  );
+  if (targets.length === 0) {
+    return 'BULL';
+  }
+  const progress = new Map<string, number>();
+  throws.forEach((throwResult) => {
+    if (throwResult.actual_number && throwResult.mark_count) {
+      progress.set(
+        throwResult.actual_number,
+        (progress.get(throwResult.actual_number) ?? 0) + throwResult.mark_count,
+      );
+    }
+  });
+  const target = [...targets].sort(
+    (a, b) => (progress.get(String(a)) ?? 0) - (progress.get(String(b)) ?? 0),
+  )[0];
+  return target ?? 'BULL';
+}
+
+function nextDrillTarget(drill: DrillDefinitionRow, current: number | 'BULL') {
+  const targets = parseDrillTargets(drill);
+  const index = targets.findIndex((target) => String(target) === String(current));
+  return targets[index + 1] ?? targets[0] ?? current;
+}
+
+function firstCricketCatchTarget(drill: DrillDefinitionRow) {
+  const targets = parseDrillTargets(drill).map(String);
+  return targets.find((target) => target !== '20') ?? targets[0] ?? '18';
+}
+
+function parseCricketTarget(value: string): number | 'BULL' | string {
+  const trimmed = value.trim().toUpperCase();
+  if (trimmed === 'BULL') {
+    return 'BULL';
+  }
+  const number = Number.parseInt(trimmed, 10);
+  return Number.isFinite(number) ? number : trimmed || 'その他';
+}
+
+function limitCricketRound(round: {
+  single: number;
+  double: number;
+  triple: number;
+  catchNumber: string;
+  catchMultiplier: string;
+  catchCount: number;
+}) {
+  const single = Math.max(0, Math.min(3, Math.trunc(round.single) || 0));
+  const double = Math.max(0, Math.min(3 - single, Math.trunc(round.double) || 0));
+  const triple = Math.max(0, Math.min(3 - single - double, Math.trunc(round.triple) || 0));
+  const catchCount = Math.max(
+    0,
+    Math.min(3 - single - double - triple, Math.trunc(round.catchCount) || 0),
+  );
+  return { ...round, single, double, triple, catchCount };
+}
+
 function DrillCard({
   drill,
   onStart,
   onAdd,
   onFavorite,
+  onInstructions,
   theme,
 }: {
   drill: DrillDefinitionRow;
   onStart: () => void;
   onAdd: () => void;
   onFavorite: () => void;
+  onInstructions: () => void;
   theme: ReturnType<typeof useTheme>;
 }) {
   return (
@@ -1600,6 +2276,7 @@ function DrillCard({
         前回結果: 未集計 / ベスト: 未集計
       </Text>
       <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 6 }}>
+        <Button label="やり方を見る" variant="secondary" onPress={onInstructions} />
         <Button label="開始" onPress={onStart} />
         <Button label="今日へ追加" variant="secondary" onPress={onAdd} />
         <Button
