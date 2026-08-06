@@ -16,6 +16,7 @@ import { parseBackupJson, type BackupPreview, type BackupPayload } from '../../s
 import {
   buildCsv,
   buildPcAnalysis,
+  formatJapanDateTime,
   type AnalysisCategory,
   type AnalysisRange,
   type ChartPoint,
@@ -250,7 +251,7 @@ export default function AnalysisScreen() {
       <KpiGrid analysis={analysis} isPc={isPc} />
       <ChartCard
         title="BULL率推移"
-        note="規定投数型はBULL率、目標達成型は達成までの投矢数を混同せず確認します。"
+        note="旧形式データはINNER／OUTER内訳がありません。旧形式はhit_count由来の参考BULL率として表示します。"
         points={analysis.bull.chart}
       />
       <ChartCard
@@ -284,12 +285,22 @@ export default function AnalysisScreen() {
               style={{ borderTopWidth: 1, borderTopColor: theme.border, paddingVertical: 8 }}
             >
               <Text style={{ color: theme.text, fontWeight: '800' }}>
-                {row.date} / {row.drillName}
+                {formatJapanDateTime(row.date)} / {row.drillName}
               </Text>
               <Text style={{ color: theme.muted, marginTop: 3 }}>
-                投矢 {row.totalThrows} / R {row.rounds} / BULL {row.bullCount} / マーク{' '}
+                投矢 {row.totalThrows} / R {row.rounds} / BULL {row.bullDisplay} / マーク{' '}
                 {row.markCount} / 入力 {row.inputMethod}
               </Text>
+              {row.bullDataKind === 'legacy_summary' ? (
+                <Text style={{ color: theme.muted, marginTop: 3 }}>
+                  INNER／OUTER内訳：未記録 / 参考BULL率 {Math.round(row.bullRate * 100)}%
+                </Text>
+              ) : null}
+              {row.dataQualityLabels.length > 0 ? (
+                <Text style={{ color: theme.muted, marginTop: 3 }}>
+                  {row.dataQualityLabels.join(' / ')}
+                </Text>
+              ) : null}
             </View>
           ))
         )}
@@ -352,7 +363,7 @@ function KpiGrid({
     ['連続練習日数', `${analysis.practiceStreakDays}日`],
     ['最近のBULL率', `${Math.round(analysis.recentBullRate * 100)}%`],
     ['最近の平均マーク', analysis.recentAverageMarks.toFixed(2)],
-    ['最終練習日', analysis.lastPracticeDate ?? 'なし'],
+    ['最終練習日', analysis.lastPracticeDateDisplay],
   ];
   return (
     <View style={{ flexDirection: 'row', flexWrap: 'wrap' }}>
@@ -393,7 +404,7 @@ function ChartCard({ title, note, points }: { title: string; note: string; point
                   style={{
                     width: `${Math.max(4, (point.value / max) * 100)}%`,
                     height: 14,
-                    backgroundColor: theme.accent,
+                    backgroundColor: point.kind === 'legacy' ? '#f59e0b' : theme.accent,
                     borderRadius: 4,
                   }}
                 />
@@ -403,6 +414,9 @@ function ChartCard({ title, note, points }: { title: string; note: string; point
               </Text>
             </View>
           ))}
+          {points.some((point) => point.kind === 'legacy') ? (
+            <Text style={{ color: theme.muted, marginTop: 4 }}>橙色：旧形式集計データ</Text>
+          ) : null}
         </View>
       )}
     </Card>
@@ -447,6 +461,22 @@ function SideAnalysis({
           DartsSupportApp独自基準 / 昇格候補 {analysis.level.promotionReady ? 'あり' : 'なし'} /
           ChatGPT評価 {analysis.form.assessments}件 / 次回重点 {analysis.form.nextFocusItems}件
         </Text>
+        <Text style={{ color: theme.muted, marginTop: 6, lineHeight: 20 }}>
+          レベル開始 {analysis.level.levelStartedAtDisplay} / 最新フォーム評価{' '}
+          {analysis.form.latestAssessmentDateDisplay}
+        </Text>
+      </Card>
+      <Card>
+        <Text style={{ color: theme.text, fontSize: 18, fontWeight: '800' }}>データ品質</Text>
+        {analysis.dataQualityLabels.length === 0 ? (
+          <Text style={{ color: theme.muted, marginTop: 6 }}>追加の注意なし</Text>
+        ) : (
+          analysis.dataQualityLabels.map((label) => (
+            <Text key={label} style={{ color: theme.muted, marginTop: 6 }}>
+              {label}
+            </Text>
+          ))
+        )}
       </Card>
       <Card>
         <Text style={{ color: theme.text, fontSize: 18, fontWeight: '800' }}>CSV出力</Text>
@@ -476,7 +506,8 @@ function SideAnalysis({
               key={row.imported_at}
               style={{ color: theme.muted, marginTop: 6, lineHeight: 20 }}
             >
-              {row.imported_at}: 追加 {row.added_rows} / スキップ {row.skipped_rows}
+              {formatJapanDateTime(row.imported_at)}: 追加 {row.added_rows} / スキップ{' '}
+              {row.skipped_rows}
             </Text>
           ))
         )}

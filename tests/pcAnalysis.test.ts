@@ -7,7 +7,7 @@ import {
   previewBackupPayload,
   type BackupPayload,
 } from '../src/domain/backup';
-import { buildCsv, buildPcAnalysis } from '../src/domain/pcAnalysis';
+import { buildCsv, buildPcAnalysis, formatJapanDateTime } from '../src/domain/pcAnalysis';
 
 function samplePayload(): BackupPayload {
   const payload: BackupPayload = {
@@ -162,6 +162,205 @@ test('PC分析はBULL、クリケット、キャッチ、得意苦手、レベ�
   assert.ok(
     analysis.strengths.weakCandidates.some((candidate) => candidate.confidence === 'データ不足'),
   );
+});
+
+test('BULL旧形式はhit_countを参考BULL本数として扱い、mark_countを使わない', () => {
+  const analysis = buildPcAnalysis(
+    {
+      training_drill_definitions: [
+        { id: 'bull_50', name: 'BULL 50', category: 'bull', completion_rule: 'fixed_throws' },
+      ],
+      drill_results: [
+        {
+          id: 'legacy-bull',
+          drill_session_id: 'legacy-session',
+          drill_definition_id: 'bull_50',
+          total_throws: 50,
+          hit_count: 10,
+          mark_count: 12,
+          inner_bull: 0,
+          outer_bull: 0,
+          bull_rate: 0,
+          created_at: '2026-08-06T09:08:24.429Z',
+          summary_json: '{}',
+        },
+      ],
+      drill_throw_results: [],
+    },
+    'all',
+  );
+
+  assert.equal(analysis.history[0]?.bullCount, 10);
+  assert.equal(analysis.history[0]?.bullDisplay, '10本（旧形式）');
+  assert.equal(analysis.history[0]?.bullDataKind, 'legacy_summary');
+  assert.equal(analysis.history[0]?.bullRate, 10 / 50);
+  assert.equal(analysis.bull.legacyBullCount, 10);
+  assert.equal(analysis.bull.chart[0]?.value, 20);
+  assert.ok(analysis.dataQualityLabels.includes('旧形式集計データ'));
+  assert.ok(analysis.dataQualityLabels.includes('INNER／OUTER内訳なし'));
+});
+
+test('BULL新形式はinner_bullとouter_bullを優先する', () => {
+  const analysis = buildPcAnalysis(
+    {
+      training_drill_definitions: [
+        { id: 'bull_50', name: 'BULL 50', category: 'bull', completion_rule: 'fixed_throws' },
+      ],
+      drill_results: [
+        {
+          id: 'new-bull',
+          drill_session_id: 'new-session',
+          drill_definition_id: 'bull_50',
+          total_throws: 50,
+          hit_count: 1,
+          mark_count: 99,
+          inner_bull: 4,
+          outer_bull: 6,
+          bull_rate: 0,
+          created_at: '2026-08-06T09:08:24.429Z',
+          summary_json: '{}',
+        },
+      ],
+      drill_throw_results: [
+        {
+          id: 'throw-new-1',
+          drill_session_id: 'new-session',
+          is_inner_bull: 1,
+          is_outer_bull: 0,
+          created_at: '2026-08-06T09:08:24.429Z',
+        },
+      ],
+    },
+    'all',
+  );
+
+  assert.equal(analysis.history[0]?.bullCount, 10);
+  assert.equal(analysis.history[0]?.bullDataKind, 'new_throw');
+  assert.equal(analysis.history[0]?.bullRate, 10 / 50);
+  assert.equal(analysis.bull.innerBull, 4);
+  assert.equal(analysis.bull.outerBull, 6);
+  assert.equal(analysis.bull.legacyBullCount, 0);
+  assert.ok(analysis.dataQualityLabels.includes('新形式1投データあり'));
+});
+
+test('練習時間はdaily minimumから集計し、planとitemを二重計上しない', () => {
+  const analysis = buildPcAnalysis(
+    {
+      daily_minimum_plans: [{ id: 'plan-1', practice_date: '2026-08-06', duration_seconds: 1620 }],
+      daily_minimum_items: [
+        { id: 'item-1', plan_id: 'plan-1', duration_seconds: 900, completed_at: '2026-08-06' },
+        { id: 'item-2', plan_id: 'plan-1', duration_seconds: 720, completed_at: '2026-08-06' },
+      ],
+      daily_minimum_completion: [
+        { id: 'completion-1', practice_date: '2026-08-06', duration_seconds: 1620 },
+      ],
+    },
+    'all',
+  );
+
+  assert.equal(analysis.totalPracticeSeconds, 1620);
+});
+
+test('練習時間は完了drill_sessionを優先し、関連itemとpractice_sessionを二重計上しない', () => {
+  const analysis = buildPcAnalysis(
+    {
+      drill_sessions: [
+        {
+          id: 'drill-session-1',
+          status: 'completed',
+          elapsed_seconds: 600,
+          daily_minimum_item_id: 'item-1',
+          practice_session_id: 'practice-session-1',
+          completed_at: '2026-08-06T09:00:00.000Z',
+        },
+      ],
+      daily_minimum_items: [
+        { id: 'item-1', plan_id: 'plan-1', duration_seconds: 600, completed_at: '2026-08-06' },
+      ],
+      practice_sessions: [
+        { id: 'practice-session-1', elapsed_seconds: 600, updated_at: '2026-08-06T09:00:00.000Z' },
+      ],
+      daily_minimum_plans: [{ id: 'plan-1', practice_date: '2026-08-06', duration_seconds: 600 }],
+      daily_minimum_completion: [
+        { id: 'completion-1', practice_date: '2026-08-06', duration_seconds: 600 },
+      ],
+    },
+    'all',
+  );
+
+  assert.equal(analysis.totalPracticeSeconds, 600);
+});
+
+test('ISO日時は日本時間表示に変換する', () => {
+  assert.equal(formatJapanDateTime('2026-08-06T09:08:24.429Z'), '2026年8月6日 18:08');
+});
+
+test('新旧データ品質を分析可能な範囲として表示する', () => {
+  const analysis = buildPcAnalysis(
+    {
+      training_drill_definitions: [
+        { id: 'bull_50', name: 'BULL 50', category: 'bull', completion_rule: 'fixed_throws' },
+      ],
+      drill_results: [
+        {
+          id: 'legacy-bull',
+          drill_session_id: 'legacy-session',
+          drill_definition_id: 'bull_50',
+          total_throws: 50,
+          hit_count: 10,
+          mark_count: 12,
+          inner_bull: 0,
+          outer_bull: 0,
+          bull_rate: 0,
+          created_at: '2026-08-06T09:08:24.429Z',
+          summary_json: '{}',
+        },
+        {
+          id: 'new-bull',
+          drill_session_id: 'new-session',
+          drill_definition_id: 'bull_50',
+          total_throws: 50,
+          hit_count: 10,
+          mark_count: 0,
+          inner_bull: 5,
+          outer_bull: 5,
+          bull_rate: 0.2,
+          created_at: '2026-08-06T10:08:24.429Z',
+          summary_json: '{}',
+        },
+      ],
+      drill_throw_results: [
+        {
+          id: 'throw-new-1',
+          drill_session_id: 'new-session',
+          is_inner_bull: 1,
+          created_at: '2026-08-06T10:08:24.429Z',
+        },
+      ],
+      media_metadata: {
+        photos: [
+          {
+            id: 'photo-1',
+            uri: 'file:///iphone/photo.jpg',
+            file_name: 'photo.jpg',
+            captured_at: '2026-08-06',
+            media_type: 'photo',
+            related_session_id: null,
+            memo: null,
+            external_file_unavailable: true,
+          },
+        ],
+        videos: [],
+      },
+    },
+    'all',
+  );
+
+  assert.ok(analysis.dataQualityLabels.includes('新形式1投データあり'));
+  assert.ok(analysis.dataQualityLabels.includes('旧形式集計データ'));
+  assert.ok(analysis.dataQualityLabels.includes('INNER／OUTER内訳なし'));
+  assert.ok(analysis.dataQualityLabels.includes('ラウンド詳細なし'));
+  assert.ok(analysis.dataQualityLabels.includes('写真・動画本体なし'));
 });
 
 test('CSV出力は日本語Excel向けBOM付きで生成される', () => {

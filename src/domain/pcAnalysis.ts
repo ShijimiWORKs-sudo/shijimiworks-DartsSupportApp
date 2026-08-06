@@ -15,6 +15,8 @@ export type PcAnalysisSummary = {
   recentBullRate: number;
   recentAverageMarks: number;
   lastPracticeDate: string | null;
+  lastPracticeDateDisplay: string;
+  dataQualityLabels: string[];
   bull: BullAnalysis;
   cricket: CricketAnalysis;
   catches: CatchAnalysis;
@@ -32,6 +34,8 @@ export type BullAnalysis = {
   bestTargetThrows: number | null;
   innerBull: number;
   outerBull: number;
+  legacyBullCount: number;
+  legacySessions: number;
   chart: ChartPoint[];
 };
 
@@ -69,6 +73,7 @@ export type CandidateReason = {
 export type LevelAnalysis = {
   currentLevel: string;
   levelStartedAt: string | null;
+  levelStartedAtDisplay: string;
   promotionReady: boolean;
   history: ChartPoint[];
   levelCheckScores: ChartPoint[];
@@ -78,6 +83,8 @@ export type FormAnalysis = {
   assessments: number;
   issuesByStatus: Record<string, number>;
   nextFocusItems: number;
+  latestAssessmentDate: string | null;
+  latestAssessmentDateDisplay: string;
 };
 
 export type PracticeHistoryRow = {
@@ -89,6 +96,10 @@ export type PracticeHistoryRow = {
   totalThrows: number;
   rounds: number;
   bullCount: number;
+  bullDisplay: string;
+  bullRate: number;
+  bullDataKind: BullDataKind;
+  dataQualityLabels: string[];
   markCount: number;
   achieved: boolean;
   inputMethod: string;
@@ -97,6 +108,20 @@ export type PracticeHistoryRow = {
 export type ChartPoint = {
   label: string;
   value: number;
+  kind?: 'new' | 'legacy';
+  description?: string;
+};
+
+export type BullDataKind = 'new_throw' | 'new_summary' | 'legacy_summary' | 'none';
+
+type BullStats = {
+  bullCount: number;
+  innerBull: number;
+  outerBull: number;
+  bullRate: number;
+  kind: BullDataKind;
+  hasThrowDetails: boolean;
+  hasInnerOuterBreakdown: boolean;
 };
 
 export function buildPcAnalysis(
@@ -122,23 +147,30 @@ export function buildPcAnalysis(
   );
   const issues = getRows(payload.improvement_issues);
   const focusItems = getRows(payload.next_focus_items);
-  const history = buildHistory(drillResults, drillDefinitions);
+  const history = buildHistory(drillResults, drillDefinitions, drillThrows, drillRounds);
   const bull = buildBullAnalysis(drillResults, drillDefinitions, drillThrows);
   const cricket = buildCricketAnalysis(drillThrows, drillRounds);
   const catches = buildCatchAnalysis(drillThrows);
   const strengths = buildStrengthWeakness(drillThrows);
+  const lastPracticeDate = history[0]?.date ?? null;
+  const latestAssessmentDate =
+    [...formAssessments].sort((a, b) =>
+      stringValue(b.created_at, '').localeCompare(stringValue(a.created_at, '')),
+    )[0]?.created_at ?? null;
 
   return {
     currentLevel: stringValue(profile?.current_level, 'C'),
     totalPracticeDays: new Set(history.map((row) => row.date.slice(0, 10))).size,
-    totalPracticeSeconds: sumNumbers(drillResults, 'duration_seconds'),
+    totalPracticeSeconds: calculatePracticeSeconds(payload, range),
     totalThrows: sumNumbers(drillResults, 'total_throws'),
     weeklyThrows: sumNumbers(filterRowsByRange(drillResults, 'created_at', '7d'), 'total_throws'),
     dailyMinimumRate: averageNumbers(dailyCompletion, 'completion_rate'),
     practiceStreakDays: calculateStreak(history.map((row) => row.date.slice(0, 10))),
     recentBullRate: bull.recentBullRate,
     recentAverageMarks: cricket.averageMarksPerThrow,
-    lastPracticeDate: history[0]?.date ?? null,
+    lastPracticeDate,
+    lastPracticeDateDisplay: formatJapanDateTime(lastPracticeDate),
+    dataQualityLabels: buildDataQualityLabels(payload, history, drillThrows, drillRounds),
     bull,
     cricket,
     catches,
@@ -146,13 +178,14 @@ export function buildPcAnalysis(
     level: {
       currentLevel: stringValue(profile?.current_level, 'C'),
       levelStartedAt: stringOrNull(profile?.level_started_at),
+      levelStartedAtDisplay: formatJapanDateTime(profile?.level_started_at),
       promotionReady: numberValue(profile?.promotion_ready) === 1,
       history: levelHistory.map((row) => ({
-        label: stringValue(row.created_at, ''),
+        label: formatJapanDateTime(row.created_at),
         value: levelValue(stringValue(row.next_level, 'C')),
       })),
       levelCheckScores: levelChecks.map((row) => ({
-        label: stringValue(row.started_at, ''),
+        label: formatJapanDateTime(row.started_at),
         value: numberValue(row.overall_score),
       })),
     },
@@ -160,6 +193,8 @@ export function buildPcAnalysis(
       assessments: formAssessments.length,
       issuesByStatus: countBy(issues, 'status'),
       nextFocusItems: focusItems.filter((row) => row.status === 'active').length,
+      latestAssessmentDate: stringOrNull(latestAssessmentDate),
+      latestAssessmentDateDisplay: formatJapanDateTime(latestAssessmentDate),
     },
     history,
   };
@@ -178,6 +213,8 @@ export function buildCsv(name: string, payload: BackupPayload) {
             : buildHistory(
                 getRows(payload.drill_results),
                 getRows(payload.training_drill_definitions),
+                getRows(payload.drill_throw_results),
+                getRows(payload.drill_rounds),
               );
   const normalizedRows = rows.map((row) => row as Record<string, unknown>);
   const columns = [...new Set(normalizedRows.flatMap((row) => Object.keys(row)))];
@@ -189,16 +226,48 @@ export function buildCsv(name: string, payload: BackupPayload) {
   ].join('\n')}`;
 }
 
+export function formatJapanDateTime(value: unknown) {
+  if (typeof value !== 'string' || !value) {
+    return 'なし';
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+  const parts = new Intl.DateTimeFormat('ja-JP', {
+    timeZone: 'Asia/Tokyo',
+    year: 'numeric',
+    month: 'numeric',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).formatToParts(date);
+  const part = (type: Intl.DateTimeFormatPartTypes) =>
+    parts.find((candidate) => candidate.type === type)?.value ?? '';
+  return `${part('year')}年${Number(part('month'))}月${Number(part('day'))}日 ${part('hour')}:${part('minute')}`;
+}
+
 function buildHistory(
   drillResults: Record<string, unknown>[],
   drillDefinitions: Record<string, unknown>[],
+  throws: Record<string, unknown>[] = [],
+  rounds: Record<string, unknown>[] = [],
 ): PracticeHistoryRow[] {
+  const throwsBySession = groupRowsBy(throws, 'drill_session_id');
+  const roundsBySession = groupRowsBy(rounds, 'drill_session_id');
   return drillResults
     .map((row) => {
       const definition = drillDefinitions.find(
         (candidate) => candidate.id === row.drill_definition_id,
       );
       const summary = parseSummary(row.summary_json);
+      const sessionId = stringValue(row.drill_session_id, '');
+      const bullStats = calculateBullStats(row, definition, throwsBySession.get(sessionId) ?? []);
+      const dataQualityLabels = buildRowDataQualityLabels(
+        bullStats,
+        roundsBySession.get(sessionId) ?? [],
+      );
       return {
         id: stringValue(row.id, ''),
         date: stringValue(row.created_at, ''),
@@ -207,7 +276,14 @@ function buildHistory(
         target: stringValue(definition?.target_numbers, ''),
         totalThrows: numberValue(row.total_throws),
         rounds: Math.ceil(numberValue(row.total_throws) / 3),
-        bullCount: numberValue(row.inner_bull) + numberValue(row.outer_bull),
+        bullCount: bullStats.bullCount,
+        bullDisplay:
+          bullStats.kind === 'legacy_summary'
+            ? `${bullStats.bullCount}本（旧形式）`
+            : `${bullStats.bullCount}本`,
+        bullRate: bullStats.bullRate,
+        bullDataKind: bullStats.kind,
+        dataQualityLabels,
         markCount: numberValue(row.mark_count),
         achieved: stringValue(definition?.completion_rule, '') !== 'manual',
         inputMethod: stringValue(summary.inputMethod, 'round_three_throw'),
@@ -224,9 +300,19 @@ function buildBullAnalysis(
   const bullDefinitions = new Set(
     definitions.filter((row) => row.category === 'bull').map((row) => String(row.id)),
   );
+  const throwsBySession = groupRowsBy(throws, 'drill_session_id');
   const bullResults = drillResults.filter((row) =>
     bullDefinitions.has(String(row.drill_definition_id)),
   );
+  const bullRows = bullResults.map((row) => {
+    const definition = definitions.find((candidate) => candidate.id === row.drill_definition_id);
+    const stats = calculateBullStats(
+      row,
+      definition,
+      throwsBySession.get(stringValue(row.drill_session_id, '')) ?? [],
+    );
+    return { row, definition, stats };
+  });
   const fixed = bullResults.filter((row) => {
     const definition = definitions.find((candidate) => candidate.id === row.drill_definition_id);
     return definition?.completion_rule === 'fixed_throws';
@@ -238,18 +324,187 @@ function buildBullAnalysis(
   return {
     fixedThrowSessions: fixed.length,
     targetSessions: target.length,
-    recentBullRate: averageNumbers(bullResults.slice(0, 5), 'bull_rate'),
+    recentBullRate: averagePerCount(
+      bullRows.slice(0, 5).reduce((sum, item) => sum + item.stats.bullRate, 0),
+      bullRows.slice(0, 5).length,
+    ),
     targetThrowAverage: target.length ? averageNumbers(target, 'total_throws') : null,
     bestTargetThrows: target.length
       ? Math.min(...target.map((row) => numberValue(row.total_throws)))
       : null,
-    innerBull: sumNumbers(bullResults, 'inner_bull'),
-    outerBull: sumNumbers(bullResults, 'outer_bull'),
-    chart: bullResults.map((row) => ({
-      label: stringValue(row.created_at, '').slice(0, 10),
-      value: numberValue(row.bull_rate) * 100,
+    innerBull: bullRows.reduce((sum, item) => sum + item.stats.innerBull, 0),
+    outerBull: bullRows.reduce((sum, item) => sum + item.stats.outerBull, 0),
+    legacyBullCount: bullRows.reduce(
+      (sum, item) => sum + (item.stats.kind === 'legacy_summary' ? item.stats.bullCount : 0),
+      0,
+    ),
+    legacySessions: bullRows.filter((item) => item.stats.kind === 'legacy_summary').length,
+    chart: bullRows.map(({ row, stats }) => ({
+      label: formatJapanDateTime(row.created_at),
+      value: stats.bullRate * 100,
+      kind: stats.kind === 'legacy_summary' ? 'legacy' : 'new',
+      description:
+        stats.kind === 'legacy_summary'
+          ? `旧形式: ${stats.bullCount}/${numberValue(row.total_throws)}本`
+          : `新形式: ${stats.innerBull + stats.outerBull}/${numberValue(row.total_throws)}本`,
     })),
   };
+}
+
+function calculateBullStats(
+  row: Record<string, unknown>,
+  definition: Record<string, unknown> | undefined,
+  throws: Record<string, unknown>[],
+): BullStats {
+  const totalThrows = numberValue(row.total_throws);
+  const innerBull = numberValue(row.inner_bull);
+  const outerBull = numberValue(row.outer_bull);
+  const summaryBullCount = innerBull + outerBull;
+  const isBullDrill = definition?.category === 'bull';
+  const hasThrowDetails = throws.length > 0;
+
+  if (summaryBullCount > 0) {
+    return {
+      bullCount: summaryBullCount,
+      innerBull,
+      outerBull,
+      bullRate: numberValue(row.bull_rate) || averagePerCount(summaryBullCount, totalThrows),
+      kind: hasThrowDetails ? 'new_throw' : 'new_summary',
+      hasThrowDetails,
+      hasInnerOuterBreakdown: true,
+    };
+  }
+
+  if (isBullDrill && numberValue(row.hit_count) > 0 && !hasThrowDetails) {
+    const bullCount = numberValue(row.hit_count);
+    return {
+      bullCount,
+      innerBull: 0,
+      outerBull: 0,
+      bullRate: averagePerCount(bullCount, totalThrows),
+      kind: 'legacy_summary',
+      hasThrowDetails: false,
+      hasInnerOuterBreakdown: false,
+    };
+  }
+
+  return {
+    bullCount: summaryBullCount,
+    innerBull,
+    outerBull,
+    bullRate: numberValue(row.bull_rate),
+    kind: hasThrowDetails ? 'new_throw' : 'none',
+    hasThrowDetails,
+    hasInnerOuterBreakdown: summaryBullCount > 0,
+  };
+}
+
+function calculatePracticeSeconds(payload: BackupPayload, range: AnalysisRange) {
+  const drillSessions = filterRowsByRange(getRows(payload.drill_sessions), 'completed_at', range);
+  const dailyItems = filterRowsByRange(getRows(payload.daily_minimum_items), 'completed_at', range);
+  const practiceSessions = filterRowsByRange(
+    getRows(payload.practice_sessions),
+    'updated_at',
+    range,
+  );
+  const plans = filterRowsByRange(getRows(payload.daily_minimum_plans), 'practice_date', range);
+  const completions = filterRowsByRange(
+    getRows(payload.daily_minimum_completion),
+    'practice_date',
+    range,
+  );
+  const countedDailyItemIds = new Set<string>();
+  const countedPracticeSessionIds = new Set<string>();
+  let total = 0;
+
+  for (const session of drillSessions) {
+    const elapsedSeconds = numberValue(session.elapsed_seconds);
+    const completed = session.status === 'completed' || Boolean(session.completed_at);
+    if (!completed || elapsedSeconds <= 0) {
+      continue;
+    }
+    total += elapsedSeconds;
+    const dailyItemId = stringOrNull(session.daily_minimum_item_id);
+    const practiceSessionId = stringOrNull(session.practice_session_id);
+    if (dailyItemId) {
+      countedDailyItemIds.add(dailyItemId);
+    }
+    if (practiceSessionId) {
+      countedPracticeSessionIds.add(practiceSessionId);
+    }
+  }
+
+  for (const item of dailyItems) {
+    const itemId = stringValue(item.id, '');
+    const durationSeconds = numberValue(item.duration_seconds);
+    if (durationSeconds <= 0 || countedDailyItemIds.has(itemId)) {
+      continue;
+    }
+    total += durationSeconds;
+  }
+
+  for (const session of practiceSessions) {
+    const sessionId = stringValue(session.id, '');
+    const elapsedSeconds = numberValue(session.elapsed_seconds);
+    if (elapsedSeconds <= 0 || countedPracticeSessionIds.has(sessionId)) {
+      continue;
+    }
+    total += elapsedSeconds;
+  }
+
+  if (total > 0) {
+    return total;
+  }
+  return Math.max(
+    sumNumbers(plans, 'duration_seconds'),
+    sumNumbers(completions, 'duration_seconds'),
+  );
+}
+
+function buildDataQualityLabels(
+  payload: BackupPayload,
+  history: PracticeHistoryRow[],
+  throws: Record<string, unknown>[],
+  rounds: Record<string, unknown>[],
+) {
+  const labels = new Set<string>();
+  if (throws.length > 0) {
+    labels.add('新形式1投データあり');
+  }
+  if (history.some((row) => row.bullDataKind === 'legacy_summary')) {
+    labels.add('旧形式集計データ');
+    labels.add('INNER／OUTER内訳なし');
+  }
+  if (
+    rounds.length === 0 ||
+    history.some((row) => row.dataQualityLabels.includes('ラウンド詳細なし'))
+  ) {
+    labels.add('ラウンド詳細なし');
+  }
+  const mediaMetadata = payload.media_metadata;
+  const hasMediaRows =
+    (mediaMetadata?.photos?.length ?? 0) > 0 ||
+    (mediaMetadata?.videos?.length ?? 0) > 0 ||
+    getRows(payload.form_videos).length > 0 ||
+    getRows(payload.throw_photo_sessions).length > 0;
+  if (hasMediaRows) {
+    labels.add('写真・動画本体なし');
+  }
+  return [...labels];
+}
+
+function buildRowDataQualityLabels(stats: BullStats, rounds: Record<string, unknown>[]) {
+  const labels: string[] = [];
+  if (stats.hasThrowDetails) {
+    labels.push('新形式1投データあり');
+  }
+  if (stats.kind === 'legacy_summary') {
+    labels.push('旧形式集計データ', 'INNER／OUTER内訳なし');
+  }
+  if (rounds.length === 0) {
+    labels.push('ラウンド詳細なし');
+  }
+  return labels;
 }
 
 function buildCricketAnalysis(
@@ -373,6 +628,20 @@ function countBy(rows: Record<string, unknown>[], key: string) {
     result[value] = (result[value] ?? 0) + 1;
   });
   return result;
+}
+
+function groupRowsBy(rows: Record<string, unknown>[], key: string) {
+  const grouped = new Map<string, Record<string, unknown>[]>();
+  for (const row of rows) {
+    const value = stringValue(row[key], '');
+    if (!value) {
+      continue;
+    }
+    const current = grouped.get(value) ?? [];
+    current.push(row);
+    grouped.set(value, current);
+  }
+  return grouped;
 }
 
 function parseSummary(value: unknown): Record<string, unknown> {
