@@ -41,7 +41,11 @@ function todayIso() {
   return new Date().toISOString().slice(0, 10);
 }
 
-function itemFromMenu(menu: PracticeMenu, planId: string, templateId: string | null): DailyPracticeItemRow {
+function itemFromMenu(
+  menu: PracticeMenu,
+  planId: string,
+  templateId: string | null,
+): DailyPracticeItemRow {
   return {
     ...menu,
     id: id('item'),
@@ -165,7 +169,9 @@ export function createMemorySupportRepository(): SupportRepository {
         session.current_throw = progress.currentThrow;
         session.elapsed_seconds = progress.elapsedSeconds;
         session.status = progress.status;
-        session.undo_snapshot_json = progress.undoSnapshot ? JSON.stringify(progress.undoSnapshot) : null;
+        session.undo_snapshot_json = progress.undoSnapshot
+          ? JSON.stringify(progress.undoSnapshot)
+          : null;
       }
     },
     async setItemStatus(itemId, status: PracticeItemStatus) {
@@ -275,7 +281,11 @@ export function createMemorySupportRepository(): SupportRepository {
           source_text: sections.recommendedPractice,
         });
       });
-      return { id: assessmentId, duplicate: false, parseStatus: parsed.hasRecognizedHeading ? 'parsed' : 'raw_only' };
+      return {
+        id: assessmentId,
+        duplicate: false,
+        parseStatus: parsed.hasRecognizedHeading ? 'parsed' : 'raw_only',
+      };
     },
     async listAssessments() {
       return [...assessments];

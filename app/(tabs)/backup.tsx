@@ -3,6 +3,9 @@ import { useState } from 'react';
 import { Alert, KeyboardAvoidingView, Platform, ScrollView, Text } from 'react-native';
 
 import { Button, Card, Field, Page, useTheme } from '../../components/ui';
+import { SUPPORT_DATABASE_FILE_NAME } from '../../src/db/database';
+import { CURRENT_SCHEMA_VERSION } from '../../src/db/schema';
+import { selectSupportRepositoryMode } from '../../src/features/support/repositoryMode';
 import { useSupportRepository } from '../../src/features/support/SupportDatabaseProvider';
 
 export default function BackupScreen() {
@@ -91,6 +94,17 @@ export default function BackupScreen() {
               のURI、撮影方向、メモなどのメタデータだけを保存します。復元後に端末内ファイルが移動・削除されている場合は、動画を再選択してください。
             </Text>
           </Card>
+          {__DEV__ ? (
+            <Card>
+              <Text style={{ color: theme.text, fontSize: 18, fontWeight: '800' }}>開発用診断</Text>
+              <Text style={{ color: theme.muted, marginTop: 6, lineHeight: 20 }}>
+                Platform: {Platform.OS}
+                {'\n'}DB種別: {selectSupportRepositoryMode(Platform.OS)}
+                {'\n'}DB名: {SUPPORT_DATABASE_FILE_NAME}
+                {'\n'}schemaVersion: {CURRENT_SCHEMA_VERSION}
+              </Text>
+            </Card>
+          ) : null}
           <Card>
             <Button
               label={isBusy ? '処理中' : 'Exportしてコピー'}

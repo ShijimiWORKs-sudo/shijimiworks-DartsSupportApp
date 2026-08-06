@@ -5,8 +5,9 @@
   "main": "expo-router/entry",
   "scripts": {
     "start": "expo start",
-    "start:tunnel": "expo start --tunnel --port 8099 --clear",
-    "start:lan": "expo start --lan --port 8099 --clear",
+    "start:tunnel": "expo start --tunnel",
+    "start:lan": "expo start --lan",
+    "start:clear": "expo start -c",
     "ios": "expo start --ios",
     "android": "expo start --android",
     "web": "expo start --web",
@@ -39,6 +40,7 @@
     "react-native-worklets": "0.5.1"
   },
   "devDependencies": {
+    "@expo/ngrok": "^4.1.3",
     "@types/react": "~19.1.10",
     "eslint": "^9.39.4",
     "eslint-config-expo": "~10.0.0",

@@ -199,6 +199,25 @@ export default function FormScreen() {
     Alert.alert('保存しました', '動画メタデータを練習記録へ関連付けました。');
   }
 
+  async function previewVideo(uri: string) {
+    try {
+      const supported = await Linking.canOpenURL(uri);
+      if (!supported) {
+        Alert.alert(
+          '動画を開けません',
+          '端末内の参照先が無効になっている可能性があります。必要に応じて動画を再選択してください。',
+        );
+        return;
+      }
+      await Linking.openURL(uri);
+    } catch (error) {
+      Alert.alert(
+        '動画を開けません',
+        error instanceof Error ? error.message : '動画の参照先を確認してください。',
+      );
+    }
+  }
+
   async function copyPrompt() {
     const previousIssues = issues
       .filter((issue) => issue.status !== 'RESOLVED')
@@ -315,6 +334,10 @@ export default function FormScreen() {
 
           <Card>
             <Text style={{ color: theme.text, fontSize: 18, fontWeight: '800' }}>動画追加</Text>
+            <Text style={{ color: theme.muted, marginTop: 4, lineHeight: 20 }}>
+              Expo
+              Go初期版では動画本体をアプリ管理領域へコピーしません。写真ライブラリ由来URIは、端末状態によって後から開けなくなる場合があります。
+            </Text>
             <Segmented
               value={videoDraft.direction}
               options={directionOptions}
@@ -399,7 +422,7 @@ export default function FormScreen() {
                   <Button
                     label="プレビュー"
                     variant="secondary"
-                    onPress={() => void Linking.openURL(video.uri)}
+                    onPress={() => void previewVideo(video.uri)}
                   />
                   <Button
                     label="削除"

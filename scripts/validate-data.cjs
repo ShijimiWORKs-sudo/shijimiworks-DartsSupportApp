@@ -1,6 +1,8 @@
 require('./ts-register.cjs');
 
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 const { MIGRATIONS, CURRENT_SCHEMA_VERSION } = require('../src/db/schema.ts');
 const { assessmentHeadingMap } = require('../src/domain/assessment.ts');
 
@@ -29,5 +31,9 @@ for (const table of requiredTables) {
 assert.equal(Object.keys(assessmentHeadingMap).length, 15);
 assert.match(MIGRATIONS[0].sql, /raw_hash TEXT NOT NULL/);
 assert.match(MIGRATIONS[0].sql, /uri TEXT NOT NULL/);
+
+const appJson = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'app.json'), 'utf8'));
+assert.match(appJson.expo.ios.infoPlist.NSPhotoLibraryUsageDescription, /投擲フォーム動画/);
+assert.match(appJson.expo.ios.infoPlist.NSPhotoLibraryAddUsageDescription, /写真ライブラリ/);
 
 console.log('Data schema validation passed.');

@@ -10,6 +10,7 @@ import {
   type TextInputProps,
   type ViewStyle,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 
 export function useTheme() {
   const scheme = useColorScheme();
@@ -39,7 +40,10 @@ export function Page({
 }) {
   const theme = useTheme();
   return (
-    <View style={[styles.page, { backgroundColor: theme.bg }]}>
+    <SafeAreaView
+      style={[styles.page, { backgroundColor: theme.bg }]}
+      edges={['top', 'left', 'right']}
+    >
       <View style={styles.header}>
         <Text style={[styles.title, { color: theme.text }]}>{title}</Text>
         {subtitle ? (
@@ -47,7 +51,7 @@ export function Page({
         ) : null}
       </View>
       {children}
-    </View>
+    </SafeAreaView>
   );
 }
 

@@ -12,6 +12,7 @@
       "infoPlist": {
         "NSCameraUsageDescription": "投擲フォーム動画を練習記録へ関連付けるためにカメラを使用します。",
         "NSPhotoLibraryUsageDescription": "投擲フォーム動画を選択して練習記録へ関連付けるために写真ライブラリを使用します。",
+        "NSPhotoLibraryAddUsageDescription": "撮影した投擲フォーム動画を写真ライブラリへ保存する場合に使用します。",
         "NSMicrophoneUsageDescription": "フォーム動画の撮影時に音声を含めるためにマイクを使用します。"
       }
     },
