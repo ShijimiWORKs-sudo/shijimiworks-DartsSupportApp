@@ -1,6 +1,17 @@
 import { useFocusEffect } from 'expo-router';
+import * as ImagePicker from 'expo-image-picker';
 import { useCallback, useMemo, useState } from 'react';
-import { Alert, KeyboardAvoidingView, Modal, Platform, ScrollView, Text, View } from 'react-native';
+import {
+  Alert,
+  Image,
+  KeyboardAvoidingView,
+  Modal,
+  Platform,
+  Pressable,
+  ScrollView,
+  Text,
+  View,
+} from 'react-native';
 
 import {
   Button,
@@ -21,6 +32,7 @@ import type {
 import {
   TRAINING_GAMES,
   calculateCricketMark,
+  normalizeFromCalibration,
   scoreNormalizedPoint,
   type BullMode,
   type FinishOutMode,
@@ -47,6 +59,13 @@ export default function TrainingScreen() {
   const [activeGame, setActiveGame] = useState<TrainingGameSessionRow | null>(null);
   const [throwForm, setThrowForm] = useState({ score: '', segment: '', multiplier: '1' });
   const [levelCheckOpen, setLevelCheckOpen] = useState(false);
+  const [photoOpen, setPhotoOpen] = useState(false);
+  const [photoUri, setPhotoUri] = useState('');
+  const [photoStep, setPhotoStep] = useState<'center' | 'twenty' | 'outer' | 'throws'>('center');
+  const [center, setCenter] = useState<{ x: number; y: number } | null>(null);
+  const [twentyPoint, setTwentyPoint] = useState<{ x: number; y: number } | null>(null);
+  const [outerPoints, setOuterPoints] = useState<{ x: number; y: number }[]>([]);
+  const [throwPoints, setThrowPoints] = useState<{ x: number; y: number }[]>([]);
   const [levelCheck, setLevelCheck] = useState({
     countUp: '',
     bull: '',
@@ -168,6 +187,131 @@ export default function TrainingScreen() {
     }
     await repo.completeTrainingGame(activeGame.id);
     await reload();
+  }
+
+  async function pickPhoto(source: 'camera' | 'library') {
+    try {
+      const permission =
+        source === 'camera'
+          ? await ImagePicker.requestCameraPermissionsAsync()
+          : await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!permission.granted) {
+        Alert.alert(
+          '権限がありません',
+          '権限を拒否してもアプリは継続できます。手入力で記録してください。',
+        );
+        return;
+      }
+      const result =
+        source === 'camera'
+          ? await ImagePicker.launchCameraAsync({ mediaTypes: ['images'], quality: 0.8 })
+          : await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], quality: 0.8 });
+      if (result.canceled || !result.assets[0]?.uri) {
+        return;
+      }
+      setPhotoUri(result.assets[0].uri);
+      setCenter(null);
+      setTwentyPoint(null);
+      setOuterPoints([]);
+      setThrowPoints([]);
+      setPhotoStep('center');
+      setPhotoOpen(true);
+    } catch (error) {
+      Alert.alert(
+        '写真を開けませんでした',
+        error instanceof Error ? error.message : '手入力で継続できます。',
+      );
+    }
+  }
+
+  function handleBoardTap(x: number, y: number) {
+    if (photoStep === 'center') {
+      setCenter({ x, y });
+      setPhotoStep('twenty');
+      return;
+    }
+    if (photoStep === 'twenty') {
+      setTwentyPoint({ x, y });
+      setPhotoStep('outer');
+      return;
+    }
+    if (photoStep === 'outer') {
+      const next = [...outerPoints, { x, y }];
+      setOuterPoints(next);
+      if (next.length >= 4) {
+        setPhotoStep('throws');
+      }
+      return;
+    }
+    if (throwPoints.length < 3) {
+      setThrowPoints([...throwPoints, { x, y }]);
+    }
+  }
+
+  function buildCalibration() {
+    if (!center || !twentyPoint || outerPoints.length < 4) {
+      return null;
+    }
+    const outerRadius =
+      outerPoints.reduce(
+        (sum, point) => sum + Math.hypot(point.x - center.x, point.y - center.y),
+        0,
+      ) / outerPoints.length;
+    const rotationDegrees =
+      (Math.atan2(twentyPoint.x - center.x, -(twentyPoint.y - center.y)) * 180) / Math.PI;
+    return {
+      centerX: center.x,
+      centerY: center.y,
+      twentyX: twentyPoint.x,
+      twentyY: twentyPoint.y,
+      outerPoints,
+      outerRadius,
+      rotationDegrees,
+    };
+  }
+
+  async function confirmPhotoThrows() {
+    if (!activeGame) {
+      Alert.alert('ゲームを選択してください', '写真判定を保存する練習ゲームを選択してください。');
+      return;
+    }
+    if (!photoUri) {
+      Alert.alert('写真がありません', '撮影または写真選択を行ってください。');
+      return;
+    }
+    const calibration = buildCalibration();
+    if (!calibration || throwPoints.length !== 3) {
+      Alert.alert('未完了です', 'BULL中心、20方向、外周4点以上、3投の位置を指定してください。');
+      return;
+    }
+    const confirmed = throwPoints.map((point) => {
+      const normalized = normalizeFromCalibration(point, calibration);
+      return scoreNormalizedPoint(normalized.x, normalized.y, 'photo_manual', 1);
+    });
+    try {
+      await repo.saveThrowPhotoSession({
+        gameSessionId: activeGame.id,
+        practiceSessionId: activeGame.practice_session_id,
+        roundNumber: Math.floor(activeThrows.length / 3) + 1,
+        originalPhotoUri: photoUri,
+        correctedPhotoUri: null,
+        calibration,
+        autoCandidates: [],
+        confirmedPositions: confirmed,
+        hasManualAdjustment: true,
+      });
+      setPhotoOpen(false);
+      await reload();
+      Alert.alert(
+        '3投を保存しました',
+        confirmed.map((dart, index) => `${index + 1}投目: ${dart.score}点`).join('\n'),
+      );
+    } catch (error) {
+      Alert.alert(
+        '保存できませんでした',
+        error instanceof Error ? error.message : '手入力で継続できます。',
+      );
+    }
   }
 
   async function addRecommendation(title: string, date: string) {
@@ -360,6 +504,14 @@ export default function TrainingScreen() {
                   onPress={() => void completeGame()}
                 />
               </View>
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+                <Button label="3投を撮影" onPress={() => void pickPhoto('camera')} />
+                <Button
+                  label="写真から判定"
+                  variant="secondary"
+                  onPress={() => void pickPhoto('library')}
+                />
+              </View>
               <Text style={{ color: theme.muted, marginTop: 8, lineHeight: 20 }}>
                 写真判定は完全自動確定せず、候補または手動タップ後にユーザー確認して保存します。
               </Text>
@@ -470,6 +622,125 @@ export default function TrainingScreen() {
           </KeyboardAvoidingView>
         </Page>
       </Modal>
+
+      <Modal visible={photoOpen} animationType="slide" onRequestClose={() => setPhotoOpen(false)}>
+        <Page
+          title="写真判定"
+          subtitle="完全自動ではありません。タップ位置を確認・修正して3投を確定します。"
+        >
+          <ScrollView contentContainerStyle={{ paddingBottom: 56 }}>
+            <Card>
+              <Text style={{ color: theme.text, fontSize: 18, fontWeight: '800' }}>
+                {photoStepLabel(photoStep)}
+              </Text>
+              <Text style={{ color: theme.muted, marginTop: 6, lineHeight: 20 }}>
+                B方式の手動キャリブレーションです。検出できない写真でも、盤面上をタップして手動確定できます。
+              </Text>
+              {photoUri ? (
+                <Pressable
+                  onPress={(event) => {
+                    const { locationX, locationY } = event.nativeEvent;
+                    handleBoardTap(locationX, locationY);
+                  }}
+                  style={{
+                    marginTop: 12,
+                    width: '100%',
+                    aspectRatio: 1,
+                    borderWidth: 1,
+                    borderColor: theme.border,
+                    overflow: 'hidden',
+                    borderRadius: 8,
+                    backgroundColor: '#111827',
+                  }}
+                >
+                  <Image
+                    source={{ uri: photoUri }}
+                    style={{ width: '100%', height: '100%' }}
+                    resizeMode="contain"
+                  />
+                  {[center, twentyPoint, ...outerPoints, ...throwPoints]
+                    .filter(Boolean)
+                    .map((point, index) => (
+                      <View
+                        key={index}
+                        style={{
+                          position: 'absolute',
+                          left: (point as { x: number; y: number }).x - 7,
+                          top: (point as { x: number; y: number }).y - 7,
+                          width: 14,
+                          height: 14,
+                          borderRadius: 7,
+                          backgroundColor:
+                            index < 2
+                              ? '#0f766e'
+                              : index < 2 + outerPoints.length
+                                ? '#f59e0b'
+                                : '#dc2626',
+                          borderWidth: 2,
+                          borderColor: '#ffffff',
+                        }}
+                      />
+                    ))}
+                </Pressable>
+              ) : null}
+              <Text style={{ color: theme.muted, marginTop: 8, lineHeight: 20 }}>
+                外周点 {outerPoints.length}/4以上 / 投擲点 {throwPoints.length}/3
+              </Text>
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 8 }}>
+                <Button
+                  label="外周を続ける"
+                  variant="ghost"
+                  onPress={() => setPhotoStep('outer')}
+                  disabled={!center || !twentyPoint}
+                />
+                <Button
+                  label="3投指定へ"
+                  variant="secondary"
+                  onPress={() => setPhotoStep('throws')}
+                  disabled={outerPoints.length < 4}
+                />
+                <Button
+                  label="最後を削除"
+                  variant="ghost"
+                  onPress={() => {
+                    if (photoStep === 'throws' && throwPoints.length > 0) {
+                      setThrowPoints(throwPoints.slice(0, -1));
+                    } else if (outerPoints.length > 0) {
+                      setOuterPoints(outerPoints.slice(0, -1));
+                    }
+                  }}
+                />
+              </View>
+            </Card>
+
+            <Card>
+              <Text style={{ color: theme.text, fontSize: 18, fontWeight: '800' }}>確認</Text>
+              {buildCalibration() && throwPoints.length > 0
+                ? throwPoints.map((point, index) => {
+                    const calibration = buildCalibration();
+                    const normalized = calibration
+                      ? normalizeFromCalibration(point, calibration)
+                      : { x: 0, y: 0 };
+                    const dart = scoreNormalizedPoint(
+                      normalized.x,
+                      normalized.y,
+                      'photo_manual',
+                      1,
+                    );
+                    return (
+                      <Text key={index} style={{ color: theme.text, marginTop: 4 }}>
+                        {index + 1}投目: {dart.score}点 / {String(dart.segment)} / x{' '}
+                        {dart.x.toFixed(2)} y {dart.y.toFixed(2)}
+                      </Text>
+                    );
+                  })
+                : null}
+              <Button label="3本を確定" onPress={() => void confirmPhotoThrows()} />
+              <Button label="閉じる" variant="ghost" onPress={() => setPhotoOpen(false)} />
+            </Card>
+          </ScrollView>
+        </Page>
+      </Modal>
     </Page>
   );
 }
@@ -505,4 +776,13 @@ function parseSegment(value: string, score: number, multiplier: number) {
 
 export function cricketMarksForThrow(segment: number | 'BULL' | 'OUT', multiplier: number) {
   return calculateCricketMark(multiplier, segment);
+}
+
+function photoStepLabel(step: 'center' | 'twenty' | 'outer' | 'throws') {
+  return {
+    center: 'BULL中心をタップ',
+    twenty: '20方向の外周をタップ',
+    outer: 'ダブル外周を4点以上タップ',
+    throws: 'ダーツ先端を3本タップ',
+  }[step];
 }
