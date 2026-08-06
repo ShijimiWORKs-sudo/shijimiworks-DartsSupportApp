@@ -32,10 +32,12 @@ import type {
 import {
   TRAINING_GAMES,
   calculateCricketMark,
+  createPhotoCandidates,
   normalizeFromCalibration,
   scoreNormalizedPoint,
   type BullMode,
   type FinishOutMode,
+  type ThrowPosition,
   type TrainingGameType,
   type TrainingThrowInput,
 } from '../../src/domain/training';
@@ -66,6 +68,7 @@ export default function TrainingScreen() {
   const [twentyPoint, setTwentyPoint] = useState<{ x: number; y: number } | null>(null);
   const [outerPoints, setOuterPoints] = useState<{ x: number; y: number }[]>([]);
   const [throwPoints, setThrowPoints] = useState<{ x: number; y: number }[]>([]);
+  const [autoCandidates, setAutoCandidates] = useState<ThrowPosition[]>([]);
   const [levelCheck, setLevelCheck] = useState({
     countUp: '',
     bull: '',
@@ -214,6 +217,7 @@ export default function TrainingScreen() {
       setTwentyPoint(null);
       setOuterPoints([]);
       setThrowPoints([]);
+      setAutoCandidates([]);
       setPhotoStep('center');
       setPhotoOpen(true);
     } catch (error) {
@@ -270,6 +274,39 @@ export default function TrainingScreen() {
     };
   }
 
+  function suggestLightweightCandidates() {
+    const calibration = buildCalibration();
+    if (!calibration) {
+      Alert.alert(
+        'キャリブレーションが必要です',
+        'BULL中心、20方向、外周4点以上を先に指定してください。',
+      );
+      return;
+    }
+    const normalizedCandidates = [
+      { x: 0, y: -0.08 },
+      { x: 0.08, y: 0.02 },
+      { x: -0.08, y: 0.06 },
+    ];
+    const candidates = createPhotoCandidates(normalizedCandidates);
+    const radians = (calibration.rotationDegrees * Math.PI) / 180;
+    const points = normalizedCandidates.map((point) => ({
+      x:
+        calibration.centerX +
+        (point.x * Math.cos(radians) - point.y * Math.sin(radians)) * calibration.outerRadius,
+      y:
+        calibration.centerY +
+        (point.x * Math.sin(radians) + point.y * Math.cos(radians)) * calibration.outerRadius,
+    }));
+    setAutoCandidates(candidates);
+    setThrowPoints(points);
+    setPhotoStep('throws');
+    Alert.alert(
+      '低信頼度候補を作成しました',
+      '画像特徴抽出ではなく、キャリブレーションから初期候補を置くExpo Go向けの軽量補助です。必ず位置を確認・修正してください。',
+    );
+  }
+
   async function confirmPhotoThrows() {
     if (!activeGame) {
       Alert.alert('ゲームを選択してください', '写真判定を保存する練習ゲームを選択してください。');
@@ -286,7 +323,12 @@ export default function TrainingScreen() {
     }
     const confirmed = throwPoints.map((point) => {
       const normalized = normalizeFromCalibration(point, calibration);
-      return scoreNormalizedPoint(normalized.x, normalized.y, 'photo_manual', 1);
+      return scoreNormalizedPoint(
+        normalized.x,
+        normalized.y,
+        autoCandidates.length > 0 ? 'photo_adjusted' : 'photo_manual',
+        autoCandidates.length > 0 ? 0.7 : 1,
+      );
     });
     try {
       await repo.saveThrowPhotoSession({
@@ -296,7 +338,7 @@ export default function TrainingScreen() {
         originalPhotoUri: photoUri,
         correctedPhotoUri: null,
         calibration,
-        autoCandidates: [],
+        autoCandidates,
         confirmedPositions: confirmed,
         hasManualAdjustment: true,
       });
@@ -684,9 +726,16 @@ export default function TrainingScreen() {
                 </Pressable>
               ) : null}
               <Text style={{ color: theme.muted, marginTop: 8, lineHeight: 20 }}>
-                外周点 {outerPoints.length}/4以上 / 投擲点 {throwPoints.length}/3
+                外周点 {outerPoints.length}/4以上 / 投擲点 {throwPoints.length}/3 / 自動候補{' '}
+                {autoCandidates.length}
               </Text>
               <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 8 }}>
+                <Button
+                  label="軽量候補を作る"
+                  variant="secondary"
+                  onPress={suggestLightweightCandidates}
+                  disabled={outerPoints.length < 4}
+                />
                 <Button
                   label="外周を続ける"
                   variant="ghost"
@@ -711,6 +760,11 @@ export default function TrainingScreen() {
                   }}
                 />
               </View>
+              {autoCandidates.length > 0 ? (
+                <Text style={{ color: theme.warning, marginTop: 8, lineHeight: 20 }}>
+                  候補は低信頼度です。重なり、黒い盤面、斜め撮影、影では外れる前提で、必ずタップ位置を修正してから確定してください。
+                </Text>
+              ) : null}
             </Card>
 
             <Card>
