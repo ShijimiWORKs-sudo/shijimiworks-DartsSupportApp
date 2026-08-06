@@ -7,10 +7,10 @@ import { selectSupportRepositoryMode } from '../src/features/support/repositoryM
 
 const root = process.cwd();
 
-test('iosとandroidではSQLite repositoryを選択し、webだけpreview repositoryを選択する', () => {
+test('iosとandroidではSQLite repositoryを選択し、webだけIndexedDB repositoryを選択する', () => {
   assert.equal(selectSupportRepositoryMode('ios'), 'sqlite');
   assert.equal(selectSupportRepositoryMode('android'), 'sqlite');
-  assert.equal(selectSupportRepositoryMode('web'), 'memory-web-preview');
+  assert.equal(selectSupportRepositoryMode('web'), 'indexeddb-web');
 });
 
 test('Expo Go向けのiOS権限説明文が日本語で設定されている', () => {
@@ -43,6 +43,7 @@ test('ネイティブ実行ソースでWeb専用APIを直接参照しない', ()
   const files = listFiles(['app', 'src', 'components'], ['.ts', '.tsx']);
   const violations = files
     .filter((file) => !file.endsWith('memoryRepository.ts'))
+    .filter((file) => !file.endsWith('indexedDbRepository.ts'))
     .flatMap((file) => {
       const text = fs.readFileSync(file, 'utf8');
       return [/window\./, /document\./, /localStorage/]

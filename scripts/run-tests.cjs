@@ -8,6 +8,7 @@ const tests = [
   'tests/expoGoCompatibility.test.ts',
   'tests/training.test.ts',
   'tests/drills.test.ts',
+  'tests/pcAnalysis.test.ts',
 ].map((file) => path.join(process.cwd(), file));
 
 const result = spawnSync(

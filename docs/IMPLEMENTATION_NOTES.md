@@ -37,6 +37,30 @@
   - ドリルセッション、ラウンド、結果、対象別結果
   - デイリーミニマム達成状況
   - 時間別プリセットと理由付きおすすめ候補
+- `004_round_based_drill_input`
+  - 3投単位入力向けのドリル説明、入力方式、終了条件
+  - 日次メニューへドリル由来情報を保持する列
+  - `drill_throw_results` による1投データ、キャッチ、target_hit/catch_hit
+  - ラウンド入力の下書き、達成条件、再開用セッションメタデータ
+
+## PC分析版
+
+- PC Web版は分析専用で、正式なゲームエンジンやクラウド同期は実装していません。
+- iPhone版はJSON Export、PC Web版はJSON Import、IndexedDB永続保存、ダッシュボード表示を担当します。
+- repository切替は `selectSupportRepositoryMode` に集約し、iOS/AndroidはSQLite、WebはIndexedDBを選択します。
+- IndexedDB store:
+  - `imported_export_packages`: 取り込んだ分析用バックアップの正本
+  - `import_history`: インポート日時、export ID、追加/スキップ件数
+- Backup JSONは `export_format`, `schema_version`, `app_version`, `exported_at`, `account_id`, `player_id`, `device_type`, `record_counts`, `export_id`, `checksum` を持ちます。
+- 写真・動画本体はJSONに含めず、URI、ファイル名、撮影日時、関連セッション、PCでは開けない可能性があるフラグを `media_metadata` に保存します。
+- CSVは追加依存なしで生成し、日本語Excelで開きやすいようUTF-8 BOM付きにしています。
+- 今回追加した依存パッケージはありません。ライセンス追加もありません。
+
+## 将来同期の拡張ポイント
+
+- 安定ID、`created_at`, `updated_at`, `deleted_at` を前提に、差分同期へ拡張できます。
+- 将来の列候補は `device_id`, `revision`, `sync_status`, `source_device`, `last_synced_at` です。
+- 初期版では大量の同期列追加は行わず、export ID、checksum、import履歴で重複判定を行います。
 
 ## Expo Go での制約
 
