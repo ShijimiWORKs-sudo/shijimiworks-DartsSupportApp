@@ -26,6 +26,7 @@ import {
 import type {
   DailyMinimumBundle,
   DailyMinimumItemRow,
+  DrillDefinitionRow,
   DrillSessionRow,
   LevelHistoryRow,
   SkillProfileRow,
@@ -57,6 +58,7 @@ export default function TrainingScreen() {
   const [throwsByGame, setThrowsByGame] = useState<Record<string, TrainingThrowRow[]>>({});
   const [dailyMinimum, setDailyMinimum] = useState<DailyMinimumBundle | null>(null);
   const [drillSessions, setDrillSessions] = useState<DrillSessionRow[]>([]);
+  const [drillDefinitions, setDrillDefinitions] = useState<DrillDefinitionRow[]>([]);
   const [recommendations, setRecommendations] = useState<
     Awaited<ReturnType<NonNullable<typeof repository>['listLevelRecommendations']>>
   >([]);
@@ -109,6 +111,7 @@ export default function TrainingScreen() {
         nextRecommendations,
         nextDailyMinimum,
         nextDrillSessions,
+        nextDrillDefinitions,
       ] = await Promise.all([
         repository.getSkillProfile(),
         repository.listLevelHistory(),
@@ -116,6 +119,7 @@ export default function TrainingScreen() {
         repository.listLevelRecommendations(todayIso()),
         repository.getOrCreateDailyMinimumPlan(todayIso()),
         repository.listDrillSessions(),
+        repository.listDrillDefinitions(),
       ]);
       const throwEntries = await Promise.all(
         nextGames.map(
@@ -129,6 +133,7 @@ export default function TrainingScreen() {
       setRecommendations(nextRecommendations);
       setDailyMinimum(nextDailyMinimum);
       setDrillSessions(nextDrillSessions);
+      setDrillDefinitions(nextDrillDefinitions);
       setActiveGame(
         (current) => nextGames.find((game) => game.id === current?.id) ?? nextGames[0] ?? null,
       );
@@ -300,6 +305,63 @@ export default function TrainingScreen() {
         error instanceof Error ? error.message : '不明なエラーです。',
       );
     }
+  }
+
+  async function startStandaloneDrill(drill: DrillDefinitionRow) {
+    try {
+      const sessionId = await repo.startDrillSession(drill.id, null);
+      setDrillResultForm({
+        sessionId,
+        itemId: '',
+        drillDefinitionId: drill.id,
+        totalThrows: String(drill.total_throws || ''),
+        hitCount: '',
+        markCount: '',
+        durationMinutes: String(drill.estimated_minutes || ''),
+        feelingLabel: '',
+        tensionLabel: '',
+        fatigueLabel: '',
+        note: '',
+      });
+      await reload();
+    } catch (error) {
+      Alert.alert(
+        '開始できませんでした',
+        error instanceof Error ? error.message : '不明なエラーです。',
+      );
+    }
+  }
+
+  async function addDrillToToday(drill: DrillDefinitionRow) {
+    await repo.addPracticeMenu(
+      {
+        title: drill.name,
+        purpose: drill.purpose,
+        targetArea: drill.target_numbers,
+        rounds: drill.rounds,
+        throwsPerRound: drill.throws_per_round,
+        sets: 1,
+        targetValue: drill.success_rule,
+        plannedMinutes: drill.estimated_minutes,
+        restSeconds: null,
+        focusNote: 'ドリルライブラリからユーザー確認後に追加',
+        memo: `カテゴリ: ${drill.category}`,
+        sortOrder: 900 + drill.sort_order,
+        isFavorite: Boolean(drill.is_favorite),
+        plannedDate: todayIso(),
+        repeatType: 'once',
+        repeatWeekdays: null,
+        isAiSuggested: false,
+        sourceAssessmentId: null,
+      },
+      false,
+    );
+    Alert.alert('今日へ追加しました', drill.name);
+  }
+
+  async function toggleDrillFavorite(drill: DrillDefinitionRow) {
+    await repo.updateDrillFavorite(drill.id, !drill.is_favorite);
+    await reload();
   }
 
   async function pickPhoto(source: 'camera' | 'library') {
@@ -681,6 +743,46 @@ export default function TrainingScreen() {
               <Button label="結果を保存" onPress={() => void saveDailyMinimumResult()} />
             </Card>
           ) : null}
+
+          <Card>
+            <Text style={{ color: theme.text, fontSize: 18, fontWeight: '800' }}>ドリル: BULL</Text>
+            <Text style={{ color: theme.muted, marginTop: 6, lineHeight: 20 }}>
+              BULL 30、BULL 50、BULL 100、3本グルーピング、1本目BULLを反復練習として記録します。
+            </Text>
+            {drillDefinitions
+              .filter((drill) => drill.category === 'bull')
+              .map((drill) => (
+                <DrillCard
+                  key={drill.id}
+                  drill={drill}
+                  onStart={() => void startStandaloneDrill(drill)}
+                  onAdd={() => void addDrillToToday(drill)}
+                  onFavorite={() => void toggleDrillFavorite(drill)}
+                  theme={theme}
+                />
+              ))}
+          </Card>
+
+          <Card>
+            <Text style={{ color: theme.text, fontSize: 18, fontWeight: '800' }}>
+              ドリル: クリケット
+            </Text>
+            <Text style={{ color: theme.muted, marginTop: 6, lineHeight: 20 }}>
+              20〜15とBULLを、15投、一周、クローズ、苦手番号、ランダム切替で鍛えます。
+            </Text>
+            {drillDefinitions
+              .filter((drill) => drill.category === 'cricket')
+              .map((drill) => (
+                <DrillCard
+                  key={drill.id}
+                  drill={drill}
+                  onStart={() => void startStandaloneDrill(drill)}
+                  onAdd={() => void addDrillToToday(drill)}
+                  onFavorite={() => void toggleDrillFavorite(drill)}
+                  theme={theme}
+                />
+              ))}
+          </Card>
 
           <Card>
             <Text style={{ color: theme.text, fontSize: 18, fontWeight: '800' }}>
@@ -1089,6 +1191,50 @@ function parseSegment(value: string, score: number, multiplier: number) {
 
 export function cricketMarksForThrow(segment: number | 'BULL' | 'OUT', multiplier: number) {
   return calculateCricketMark(multiplier, segment);
+}
+
+function DrillCard({
+  drill,
+  onStart,
+  onAdd,
+  onFavorite,
+  theme,
+}: {
+  drill: DrillDefinitionRow;
+  onStart: () => void;
+  onAdd: () => void;
+  onFavorite: () => void;
+  theme: ReturnType<typeof useTheme>;
+}) {
+  return (
+    <View
+      style={{
+        borderTopWidth: 1,
+        borderTopColor: theme.border,
+        marginTop: 10,
+        paddingTop: 10,
+      }}
+    >
+      <Text style={{ color: theme.text, fontWeight: '800' }}>{drill.name}</Text>
+      <Text style={{ color: theme.muted, marginTop: 3, lineHeight: 20 }}>{drill.purpose}</Text>
+      <Text style={{ color: theme.text, marginTop: 4, lineHeight: 20 }}>
+        目安{drill.estimated_minutes}分 / {drill.total_throws}投 / 対象 {drill.target_level_min}-
+        {drill.target_level_max}
+      </Text>
+      <Text style={{ color: theme.muted, marginTop: 3, lineHeight: 20 }}>
+        前回結果: 未集計 / ベスト: 未集計
+      </Text>
+      <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 6 }}>
+        <Button label="開始" onPress={onStart} />
+        <Button label="今日へ追加" variant="secondary" onPress={onAdd} />
+        <Button
+          label={drill.is_favorite ? 'お気に入り済' : 'お気に入り'}
+          variant="ghost"
+          onPress={onFavorite}
+        />
+      </View>
+    </View>
+  );
 }
 
 function photoStepLabel(step: 'center' | 'twenty' | 'outer' | 'throws') {
