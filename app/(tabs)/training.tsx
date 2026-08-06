@@ -27,12 +27,15 @@ import type {
   DailyMinimumBundle,
   DailyMinimumItemRow,
   DrillDefinitionRow,
+  DrillResultRow,
   DrillSessionRow,
   LevelHistoryRow,
   SkillProfileRow,
   TrainingGameSessionRow,
   TrainingThrowRow,
+  RecommendedDrillRow,
 } from '../../src/db/repository';
+import type { TimePreset } from '../../src/domain/drills';
 import {
   TRAINING_GAMES,
   calculateCricketMark,
@@ -59,6 +62,9 @@ export default function TrainingScreen() {
   const [dailyMinimum, setDailyMinimum] = useState<DailyMinimumBundle | null>(null);
   const [drillSessions, setDrillSessions] = useState<DrillSessionRow[]>([]);
   const [drillDefinitions, setDrillDefinitions] = useState<DrillDefinitionRow[]>([]);
+  const [drillResults, setDrillResults] = useState<DrillResultRow[]>([]);
+  const [recommendedDrills, setRecommendedDrills] = useState<RecommendedDrillRow[]>([]);
+  const [timePreset, setTimePreset] = useState<TimePreset>('15');
   const [recommendations, setRecommendations] = useState<
     Awaited<ReturnType<NonNullable<typeof repository>['listLevelRecommendations']>>
   >([]);
@@ -68,6 +74,7 @@ export default function TrainingScreen() {
   const [activeGame, setActiveGame] = useState<TrainingGameSessionRow | null>(null);
   const [throwForm, setThrowForm] = useState({ score: '', segment: '', multiplier: '1' });
   const [levelCheckOpen, setLevelCheckOpen] = useState(false);
+  const [customOpen, setCustomOpen] = useState(false);
   const [photoOpen, setPhotoOpen] = useState(false);
   const [photoUri, setPhotoUri] = useState('');
   const [photoStep, setPhotoStep] = useState<'center' | 'twenty' | 'outer' | 'throws'>('center');
@@ -83,6 +90,24 @@ export default function TrainingScreen() {
     cricket: '',
     finish: '',
     stability: '',
+  });
+  const [customDrill, setCustomDrill] = useState({
+    name: '',
+    purpose: '',
+    category: 'custom' as DrillDefinitionRow['category'],
+    targetNumbers: '',
+    rounds: '',
+    throwsPerRound: '',
+    totalThrows: '',
+    successRule: '',
+    scoringMode: 'hit',
+    estimatedMinutes: '',
+    targetLevelMin: 'C',
+    targetLevelMax: 'SA',
+    isDailyMinimum: false,
+    isFavorite: false,
+    canUsePhoto: false,
+    canUseVideo: false,
   });
   const [drillResultForm, setDrillResultForm] = useState({
     sessionId: '',
@@ -112,6 +137,8 @@ export default function TrainingScreen() {
         nextDailyMinimum,
         nextDrillSessions,
         nextDrillDefinitions,
+        nextDrillResults,
+        nextRecommendedDrills,
       ] = await Promise.all([
         repository.getSkillProfile(),
         repository.listLevelHistory(),
@@ -120,6 +147,8 @@ export default function TrainingScreen() {
         repository.getOrCreateDailyMinimumPlan(todayIso()),
         repository.listDrillSessions(),
         repository.listDrillDefinitions(),
+        repository.listDrillResults(),
+        repository.listRecommendedDrills(todayIso()),
       ]);
       const throwEntries = await Promise.all(
         nextGames.map(
@@ -134,6 +163,8 @@ export default function TrainingScreen() {
       setDailyMinimum(nextDailyMinimum);
       setDrillSessions(nextDrillSessions);
       setDrillDefinitions(nextDrillDefinitions);
+      setDrillResults(nextDrillResults);
+      setRecommendedDrills(nextRecommendedDrills);
       setActiveGame(
         (current) => nextGames.find((game) => game.id === current?.id) ?? nextGames[0] ?? null,
       );
@@ -158,6 +189,7 @@ export default function TrainingScreen() {
     [activeGame, throwsByGame],
   );
   const analysis = useMemo(() => analyzeThrows(Object.values(throwsByGame).flat()), [throwsByGame]);
+  const drillAnalysis = useMemo(() => analyzeDrillResults(drillResults), [drillResults]);
 
   if (!repository) {
     return unavailableView;
@@ -362,6 +394,67 @@ export default function TrainingScreen() {
   async function toggleDrillFavorite(drill: DrillDefinitionRow) {
     await repo.updateDrillFavorite(drill.id, !drill.is_favorite);
     await reload();
+  }
+
+  async function generateDrillRecommendations() {
+    await repo.generateRecommendedDrills(todayIso(), timePreset);
+    await reload();
+    Alert.alert(
+      '候補を作成しました',
+      'おすすめは候補表示のみです。今日へ追加するには各カードのボタンを押してください。',
+    );
+  }
+
+  async function applyDrillRecommendation(recommendation: RecommendedDrillRow) {
+    await repo.applyRecommendedDrill(recommendation.id, todayIso());
+    await reload();
+    Alert.alert('今日へ追加しました', recommendation.name ?? 'おすすめドリル');
+  }
+
+  async function saveCustomDrill() {
+    if (!customDrill.name.trim() || !customDrill.purpose.trim()) {
+      Alert.alert('入力を確認してください', '名前と目的は必須です。');
+      return;
+    }
+    await repo.createCustomDrill({
+      name: customDrill.name,
+      purpose: customDrill.purpose,
+      category: customDrill.category,
+      targetNumbers: customDrill.targetNumbers,
+      rounds: Number.parseInt(customDrill.rounds, 10) || null,
+      throwsPerRound: Number.parseInt(customDrill.throwsPerRound, 10) || null,
+      totalThrows: Number.parseInt(customDrill.totalThrows, 10) || null,
+      successRule: customDrill.successRule,
+      scoringMode: customDrill.scoringMode,
+      estimatedMinutes: Number.parseInt(customDrill.estimatedMinutes, 10) || null,
+      targetLevelMin: customDrill.targetLevelMin as SkillProfileRow['current_level'],
+      targetLevelMax: customDrill.targetLevelMax as SkillProfileRow['current_level'],
+      isDailyMinimum: customDrill.isDailyMinimum,
+      isFavorite: customDrill.isFavorite,
+      canUsePhoto: customDrill.canUsePhoto,
+      canUseVideo: customDrill.canUseVideo,
+    });
+    setCustomOpen(false);
+    setCustomDrill({
+      name: '',
+      purpose: '',
+      category: 'custom',
+      targetNumbers: '',
+      rounds: '',
+      throwsPerRound: '',
+      totalThrows: '',
+      successRule: '',
+      scoringMode: 'hit',
+      estimatedMinutes: '',
+      targetLevelMin: 'C',
+      targetLevelMax: 'SA',
+      isDailyMinimum: false,
+      isFavorite: false,
+      canUsePhoto: false,
+      canUseVideo: false,
+    });
+    await reload();
+    Alert.alert('保存しました', 'カスタム練習を作成しました。');
   }
 
   async function pickPhoto(source: 'camera' | 'library') {
@@ -853,6 +946,81 @@ export default function TrainingScreen() {
 
           <Card>
             <Text style={{ color: theme.text, fontSize: 18, fontWeight: '800' }}>
+              お気に入り / カスタム
+            </Text>
+            <Text style={{ color: theme.muted, marginTop: 6, lineHeight: 20 }}>
+              よく使う練習をお気に入り化し、独自ドリルを作成できます。ビルトインは削除不可です。
+            </Text>
+            <Button label="カスタム練習を作成" onPress={() => setCustomOpen(true)} />
+            {drillDefinitions
+              .filter((drill) => drill.is_favorite || drill.category === 'custom')
+              .map((drill) => (
+                <DrillCard
+                  key={drill.id}
+                  drill={drill}
+                  onStart={() => void startStandaloneDrill(drill)}
+                  onAdd={() => void addDrillToToday(drill)}
+                  onFavorite={() => void toggleDrillFavorite(drill)}
+                  theme={theme}
+                />
+              ))}
+          </Card>
+
+          <Card>
+            <Text style={{ color: theme.text, fontSize: 18, fontWeight: '800' }}>
+              時間別おすすめ
+            </Text>
+            <Text style={{ color: theme.muted, marginTop: 6, lineHeight: 20 }}>
+              5〜60分から選び、現在レベルと弱点候補に応じたドリル候補を作成します。自動では予定に追加しません。
+            </Text>
+            <Segmented<TimePreset>
+              value={timePreset}
+              onChange={setTimePreset}
+              options={[
+                { label: '5分', value: '5' },
+                { label: '10分', value: '10' },
+                { label: '15分', value: '15' },
+                { label: '30分', value: '30' },
+                { label: '45分', value: '45' },
+                { label: '60分', value: '60' },
+                { label: 'カスタム', value: 'custom' },
+              ]}
+            />
+            <Button
+              label="おすすめ候補を生成"
+              onPress={() => void generateDrillRecommendations()}
+            />
+            {recommendedDrills.map((recommendation) => (
+              <View
+                key={recommendation.id}
+                style={{
+                  borderTopWidth: 1,
+                  borderTopColor: theme.border,
+                  marginTop: 10,
+                  paddingTop: 10,
+                }}
+              >
+                <Text style={{ color: theme.text, fontWeight: '800' }}>
+                  {recommendation.name ?? recommendation.drill_definition_id ?? 'おすすめドリル'}
+                </Text>
+                <Text style={{ color: theme.muted, marginTop: 4, lineHeight: 20 }}>
+                  理由: {recommendation.source_reason}
+                </Text>
+                <Text style={{ color: theme.muted, marginTop: 3 }}>
+                  状態: {recommendation.status}
+                </Text>
+                <Button
+                  label="今日へ追加"
+                  variant="secondary"
+                  disabled={recommendation.status === 'added'}
+                  onPress={() => void applyDrillRecommendation(recommendation)}
+                />
+              </View>
+            ))}
+          </Card>
+
+          <Card>
+            <Text style={{ color: theme.text, fontSize: 18, fontWeight: '800' }}>
               得意・苦手分析
             </Text>
             <Text style={{ color: theme.muted, marginTop: 6, lineHeight: 20 }}>
@@ -864,6 +1032,15 @@ export default function TrainingScreen() {
             </Text>
             <Text style={{ color: theme.muted, marginTop: 4, lineHeight: 20 }}>
               初期版は保存済み投擲の命中率と入力方法から集計します。公式レーティングではありません。
+            </Text>
+            <Text style={{ color: theme.text, marginTop: 8, lineHeight: 20 }}>
+              ドリル実施 {drillAnalysis.resultCount}回 / 総投数 {drillAnalysis.totalThrows} /
+              週間投数 {drillAnalysis.weeklyThrows} / 月間投数 {drillAnalysis.monthlyThrows}
+            </Text>
+            <Text style={{ color: theme.muted, marginTop: 4, lineHeight: 20 }}>
+              平均成功率 {Math.round(drillAnalysis.averageSuccessRate * 100)}% / 平均BULL率{' '}
+              {Math.round(drillAnalysis.averageBullRate * 100)}% / 苦手候補{' '}
+              {drillAnalysis.weakTargets || '未判定'}
             </Text>
           </Card>
 
@@ -1088,6 +1265,137 @@ export default function TrainingScreen() {
               />
               <Button label="保存" onPress={() => void saveLevelCheck()} />
               <Button label="閉じる" variant="ghost" onPress={() => setLevelCheckOpen(false)} />
+            </ScrollView>
+          </KeyboardAvoidingView>
+        </Page>
+      </Modal>
+
+      <Modal visible={customOpen} animationType="slide" onRequestClose={() => setCustomOpen(false)}>
+        <Page
+          title="カスタム練習"
+          subtitle="独自ドリルを作成します。ビルトインとは別に保存されます。"
+        >
+          <KeyboardAvoidingView
+            behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+            style={{ flex: 1 }}
+          >
+            <ScrollView
+              keyboardShouldPersistTaps="handled"
+              contentContainerStyle={{ padding: 16, paddingBottom: 56 }}
+            >
+              <Field
+                label="名前"
+                value={customDrill.name}
+                onChangeText={(name) => setCustomDrill({ ...customDrill, name })}
+              />
+              <Field
+                label="目的"
+                value={customDrill.purpose}
+                onChangeText={(purpose) => setCustomDrill({ ...customDrill, purpose })}
+              />
+              <Segmented<DrillDefinitionRow['category']>
+                value={customDrill.category}
+                onChange={(category) => setCustomDrill({ ...customDrill, category })}
+                options={[
+                  { label: 'BULL', value: 'bull' },
+                  { label: 'クリケット', value: 'cricket' },
+                  { label: 'シングル', value: 'single' },
+                  { label: 'フォーム', value: 'form' },
+                  { label: 'カスタム', value: 'custom' },
+                ]}
+              />
+              <Field
+                label="対象ナンバー"
+                value={customDrill.targetNumbers}
+                onChangeText={(targetNumbers) => setCustomDrill({ ...customDrill, targetNumbers })}
+              />
+              <Field
+                label="ラウンド数"
+                keyboardType="number-pad"
+                value={customDrill.rounds}
+                onChangeText={(rounds) => setCustomDrill({ ...customDrill, rounds })}
+              />
+              <Field
+                label="1ラウンド投数"
+                keyboardType="number-pad"
+                value={customDrill.throwsPerRound}
+                onChangeText={(throwsPerRound) =>
+                  setCustomDrill({ ...customDrill, throwsPerRound })
+                }
+              />
+              <Field
+                label="合計投数"
+                keyboardType="number-pad"
+                value={customDrill.totalThrows}
+                onChangeText={(totalThrows) => setCustomDrill({ ...customDrill, totalThrows })}
+              />
+              <Field
+                label="成功条件"
+                value={customDrill.successRule}
+                onChangeText={(successRule) => setCustomDrill({ ...customDrill, successRule })}
+              />
+              <Field
+                label="得点/マーク方式"
+                value={customDrill.scoringMode}
+                onChangeText={(scoringMode) => setCustomDrill({ ...customDrill, scoringMode })}
+              />
+              <Field
+                label="タイマー目安 分"
+                keyboardType="number-pad"
+                value={customDrill.estimatedMinutes}
+                onChangeText={(estimatedMinutes) =>
+                  setCustomDrill({ ...customDrill, estimatedMinutes })
+                }
+              />
+              <Field
+                label="対象レベル下限"
+                value={customDrill.targetLevelMin}
+                onChangeText={(targetLevelMin) =>
+                  setCustomDrill({ ...customDrill, targetLevelMin })
+                }
+              />
+              <Field
+                label="対象レベル上限"
+                value={customDrill.targetLevelMax}
+                onChangeText={(targetLevelMax) =>
+                  setCustomDrill({ ...customDrill, targetLevelMax })
+                }
+              />
+              <Button
+                label={
+                  customDrill.isDailyMinimum ? 'デイリーミニマム対象' : 'デイリーミニマム対象外'
+                }
+                variant="secondary"
+                onPress={() =>
+                  setCustomDrill({
+                    ...customDrill,
+                    isDailyMinimum: !customDrill.isDailyMinimum,
+                  })
+                }
+              />
+              <Button
+                label={customDrill.isFavorite ? 'お気に入り' : 'お気に入りにする'}
+                variant="secondary"
+                onPress={() =>
+                  setCustomDrill({ ...customDrill, isFavorite: !customDrill.isFavorite })
+                }
+              />
+              <Button
+                label={customDrill.canUsePhoto ? '写真判定を使う' : '写真判定を使わない'}
+                variant="ghost"
+                onPress={() =>
+                  setCustomDrill({ ...customDrill, canUsePhoto: !customDrill.canUsePhoto })
+                }
+              />
+              <Button
+                label={customDrill.canUseVideo ? '動画を記録する' : '動画を記録しない'}
+                variant="ghost"
+                onPress={() =>
+                  setCustomDrill({ ...customDrill, canUseVideo: !customDrill.canUseVideo })
+                }
+              />
+              <Button label="保存" onPress={() => void saveCustomDrill()} />
+              <Button label="閉じる" variant="ghost" onPress={() => setCustomOpen(false)} />
             </ScrollView>
           </KeyboardAvoidingView>
         </Page>
@@ -1340,5 +1648,34 @@ function analyzeThrows(throws: TrainingThrowRow[]) {
       .slice(-3)
       .map(([segment]) => segment)
       .join(', '),
+  };
+}
+
+function analyzeDrillResults(results: DrillResultRow[]) {
+  const now = new Date();
+  const weekAgo = new Date(now);
+  weekAgo.setDate(now.getDate() - 7);
+  const monthAgo = new Date(now);
+  monthAgo.setDate(now.getDate() - 30);
+  const recentWeakTargets = results
+    .map((result) => result.weakest_target)
+    .filter((target): target is string => Boolean(target))
+    .slice(0, 5);
+  return {
+    resultCount: results.length,
+    totalThrows: results.reduce((sum, result) => sum + result.total_throws, 0),
+    weeklyThrows: results
+      .filter((result) => new Date(result.created_at) >= weekAgo)
+      .reduce((sum, result) => sum + result.total_throws, 0),
+    monthlyThrows: results
+      .filter((result) => new Date(result.created_at) >= monthAgo)
+      .reduce((sum, result) => sum + result.total_throws, 0),
+    averageSuccessRate: results.length
+      ? results.reduce((sum, result) => sum + result.success_rate, 0) / results.length
+      : 0,
+    averageBullRate: results.length
+      ? results.reduce((sum, result) => sum + result.bull_rate, 0) / results.length
+      : 0,
+    weakTargets: [...new Set(recentWeakTargets)].join(', '),
   };
 }
