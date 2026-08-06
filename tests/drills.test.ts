@@ -16,6 +16,10 @@ test('ビルトインメニューは安定IDで重複登録されない', () => 
   assert.ok(ids.includes('bull_30'));
   assert.ok(ids.includes('cricket_number_15'));
   assert.ok(ids.includes('daily_finish_three'));
+  assert.equal(
+    getBuiltInDrills().every((drill) => drill.isBuiltin),
+    true,
+  );
 });
 
 test('新規PlayerにC用デイリーミニマムが表示され、レベル変更で候補が変わる', () => {
@@ -134,10 +138,33 @@ test('5分、10分、15分プリセットと苦手ナンバー候補を生成で
   assert.equal(generateTimePreset('C', '5')[0]?.name, 'BULL 12投');
   assert.ok(generateTimePreset('C', '10').some((drill) => drill.name === 'ウォームアップ9投'));
   assert.ok(generateTimePreset('C', '15').some((drill) => drill.id === 'daily_finish_three'));
+  assert.ok(generateTimePreset('B', '30').some((drill) => drill.id === 'bull_50'));
+  assert.ok(generateTimePreset('AA', '45').some((drill) => drill.id === 'bull_100'));
+  assert.ok(generateTimePreset('SA', '60').some((drill) => drill.id === 'weak_cricket_number'));
   const weak = findWeakCricketTarget([
     { targetNumber: 20, averageMarks: 2.4, samples: 3 },
     { targetNumber: 18, averageMarks: 0.8, samples: 3 },
   ]);
   assert.equal(weak.targetNumber, 18);
   assert.match(weak.reason, /平均マーク/);
+});
+
+test('全カテゴリの独自ドリルがあり、公式ゲームと区別できる', () => {
+  const categories = new Set(getBuiltInDrills().map((drill) => drill.category));
+  for (const category of [
+    'daily_minimum',
+    'bull',
+    'cricket',
+    'single',
+    'double',
+    'triple',
+    'form',
+    'pressure',
+  ]) {
+    assert.ok(categories.has(category as never), `${category} should exist`);
+  }
+  assert.equal(
+    getBuiltInDrills().some((drill) => drill.name === 'COUNT-UP'),
+    false,
+  );
 });
