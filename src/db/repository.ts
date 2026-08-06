@@ -38,7 +38,6 @@ import {
   summarizeDailyMinimum,
   summarizeDrillResult,
   type DrillCategory,
-  type DrillDefinition,
   type DrillResultInput,
   type DrillType,
   type TimePreset,

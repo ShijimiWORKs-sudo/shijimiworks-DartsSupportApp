@@ -24,6 +24,9 @@ import {
   useTheme,
 } from '../../components/ui';
 import type {
+  DailyMinimumBundle,
+  DailyMinimumItemRow,
+  DrillSessionRow,
   LevelHistoryRow,
   SkillProfileRow,
   TrainingGameSessionRow,
@@ -52,6 +55,8 @@ export default function TrainingScreen() {
   const [history, setHistory] = useState<LevelHistoryRow[]>([]);
   const [games, setGames] = useState<TrainingGameSessionRow[]>([]);
   const [throwsByGame, setThrowsByGame] = useState<Record<string, TrainingThrowRow[]>>({});
+  const [dailyMinimum, setDailyMinimum] = useState<DailyMinimumBundle | null>(null);
+  const [drillSessions, setDrillSessions] = useState<DrillSessionRow[]>([]);
   const [recommendations, setRecommendations] = useState<
     Awaited<ReturnType<NonNullable<typeof repository>['listLevelRecommendations']>>
   >([]);
@@ -77,6 +82,19 @@ export default function TrainingScreen() {
     finish: '',
     stability: '',
   });
+  const [drillResultForm, setDrillResultForm] = useState({
+    sessionId: '',
+    itemId: '',
+    drillDefinitionId: '',
+    totalThrows: '',
+    hitCount: '',
+    markCount: '',
+    durationMinutes: '',
+    feelingLabel: '',
+    tensionLabel: '',
+    fatigueLabel: '',
+    note: '',
+  });
 
   const reload = useCallback(async () => {
     if (!repository) {
@@ -84,11 +102,20 @@ export default function TrainingScreen() {
     }
     setIsLoading(true);
     try {
-      const [nextProfile, nextHistory, nextGames, nextRecommendations] = await Promise.all([
+      const [
+        nextProfile,
+        nextHistory,
+        nextGames,
+        nextRecommendations,
+        nextDailyMinimum,
+        nextDrillSessions,
+      ] = await Promise.all([
         repository.getSkillProfile(),
         repository.listLevelHistory(),
         repository.listTrainingGames(),
         repository.listLevelRecommendations(todayIso()),
+        repository.getOrCreateDailyMinimumPlan(todayIso()),
+        repository.listDrillSessions(),
       ]);
       const throwEntries = await Promise.all(
         nextGames.map(
@@ -100,6 +127,8 @@ export default function TrainingScreen() {
       setGames(nextGames);
       setThrowsByGame(Object.fromEntries(throwEntries));
       setRecommendations(nextRecommendations);
+      setDailyMinimum(nextDailyMinimum);
+      setDrillSessions(nextDrillSessions);
       setActiveGame(
         (current) => nextGames.find((game) => game.id === current?.id) ?? nextGames[0] ?? null,
       );
@@ -191,6 +220,86 @@ export default function TrainingScreen() {
     }
     await repo.completeTrainingGame(activeGame.id);
     await reload();
+  }
+
+  async function startDailyMinimumItem(item: DailyMinimumItemRow) {
+    try {
+      const sessionId = await repo.startDrillSession(item.drill_definition_id, item.id);
+      setDrillResultForm({
+        ...drillResultForm,
+        sessionId,
+        itemId: item.id,
+        drillDefinitionId: item.drill_definition_id,
+        totalThrows: String(item.target_throws || ''),
+        durationMinutes: String(item.estimated_minutes || ''),
+      });
+      await reload();
+    } catch (error) {
+      Alert.alert(
+        '開始できませんでした',
+        error instanceof Error ? error.message : '不明なエラーです。',
+      );
+    }
+  }
+
+  async function toggleDrillPause(session: DrillSessionRow) {
+    const nextStatus = session.status === 'paused' ? 'in_progress' : 'paused';
+    await repo.updateDrillSessionProgress(
+      session.id,
+      nextStatus,
+      session.current_round,
+      session.current_throw,
+      session.elapsed_seconds,
+    );
+    await reload();
+  }
+
+  async function saveDailyMinimumResult() {
+    if (!drillResultForm.sessionId || !drillResultForm.drillDefinitionId) {
+      Alert.alert('ドリルを開始してください', '先にデイリーミニマムの項目を開始してください。');
+      return;
+    }
+    const totalThrows = Number.parseInt(drillResultForm.totalThrows, 10) || 0;
+    const hitCount = Number.parseInt(drillResultForm.hitCount, 10) || 0;
+    const markCount = Number.parseInt(drillResultForm.markCount, 10) || 0;
+    const durationMinutes = Number.parseInt(drillResultForm.durationMinutes, 10) || 0;
+    try {
+      await repo.saveDrillResult(drillResultForm.sessionId, {
+        drillDefinitionId: drillResultForm.drillDefinitionId,
+        drillType: 'custom',
+        totalThrows,
+        hitCount,
+        markCount,
+        durationSeconds: durationMinutes * 60,
+        feelingLabel: drillResultForm.feelingLabel,
+        tensionLabel: drillResultForm.tensionLabel,
+        fatigueLabel: drillResultForm.fatigueLabel,
+        note: drillResultForm.note,
+      });
+      setDrillResultForm({
+        sessionId: '',
+        itemId: '',
+        drillDefinitionId: '',
+        totalThrows: '',
+        hitCount: '',
+        markCount: '',
+        durationMinutes: '',
+        feelingLabel: '',
+        tensionLabel: '',
+        fatigueLabel: '',
+        note: '',
+      });
+      await reload();
+      Alert.alert(
+        '保存しました',
+        'デイリーミニマムの実施結果を保存しました。未完了項目があっても記録は残ります。',
+      );
+    } catch (error) {
+      Alert.alert(
+        '保存できませんでした',
+        error instanceof Error ? error.message : '不明なエラーです。',
+      );
+    }
   }
 
   async function pickPhoto(source: 'camera' | 'library') {
@@ -439,6 +548,139 @@ export default function TrainingScreen() {
               />
             </View>
           </Card>
+
+          <Card>
+            <Text style={{ color: theme.text, fontSize: 18, fontWeight: '800' }}>
+              今日のデイリーミニマム
+            </Text>
+            <Text style={{ color: theme.muted, marginTop: 6, lineHeight: 20 }}>
+              毎日最低限の短時間メニューです。未完了でも練習記録は保存できます。
+            </Text>
+            {dailyMinimum ? (
+              <>
+                <Text style={{ color: theme.text, marginTop: 8, lineHeight: 20 }}>
+                  完了 {dailyMinimum.summary.completedItems}/{dailyMinimum.summary.totalItems} /{' '}
+                  {dailyMinimum.summary.completionRate}% / 実施投数{' '}
+                  {dailyMinimum.summary.totalThrows} / 実施時間{' '}
+                  {Math.round(dailyMinimum.summary.durationSeconds / 60)}分
+                </Text>
+                <Text style={{ color: theme.muted, marginTop: 4, lineHeight: 20 }}>
+                  未完了:{' '}
+                  {dailyMinimum.summary.incompleteNames.length > 0
+                    ? dailyMinimum.summary.incompleteNames.join(', ')
+                    : 'なし'}{' '}
+                  / 連続達成 {dailyMinimum.summary.streakDays}日 / 今週{' '}
+                  {dailyMinimum.summary.achievedDaysThisWeek}日
+                </Text>
+                {dailyMinimum.items.map((item) => {
+                  const session = drillSessions.find(
+                    (candidate) => candidate.daily_minimum_item_id === item.id,
+                  );
+                  return (
+                    <View
+                      key={item.id}
+                      style={{
+                        borderTopWidth: 1,
+                        borderTopColor: theme.border,
+                        marginTop: 10,
+                        paddingTop: 10,
+                      }}
+                    >
+                      <Text style={{ color: theme.text, fontWeight: '800' }}>
+                        {item.name_snapshot}
+                      </Text>
+                      <Text style={{ color: theme.muted, marginTop: 3, lineHeight: 20 }}>
+                        {item.target_throws}投 / 目安{item.estimated_minutes}分 / 状態:{' '}
+                        {item.status}
+                      </Text>
+                      <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+                        <Button
+                          label={session ? '結果入力へ' : '開始'}
+                          onPress={() => void startDailyMinimumItem(item)}
+                          disabled={item.status === 'completed'}
+                        />
+                        {session ? (
+                          <Button
+                            label={session.status === 'paused' ? '再開' : '一時停止'}
+                            variant="secondary"
+                            onPress={() => void toggleDrillPause(session)}
+                            disabled={item.status === 'completed'}
+                          />
+                        ) : null}
+                      </View>
+                    </View>
+                  );
+                })}
+              </>
+            ) : null}
+          </Card>
+
+          {drillResultForm.sessionId ? (
+            <Card>
+              <Text style={{ color: theme.text, fontSize: 18, fontWeight: '800' }}>
+                ドリル結果入力
+              </Text>
+              <Text style={{ color: theme.muted, marginTop: 6, lineHeight: 20 }}>
+                BULL本数や命中数、マーク数だけでも保存できます。
+              </Text>
+              <Field
+                label="実施投数"
+                keyboardType="number-pad"
+                value={drillResultForm.totalThrows}
+                onChangeText={(totalThrows) =>
+                  setDrillResultForm({ ...drillResultForm, totalThrows })
+                }
+              />
+              <Field
+                label="命中数/BULL数"
+                keyboardType="number-pad"
+                value={drillResultForm.hitCount}
+                onChangeText={(hitCount) => setDrillResultForm({ ...drillResultForm, hitCount })}
+              />
+              <Field
+                label="マーク数"
+                keyboardType="number-pad"
+                value={drillResultForm.markCount}
+                onChangeText={(markCount) => setDrillResultForm({ ...drillResultForm, markCount })}
+              />
+              <Field
+                label="実施時間 分"
+                keyboardType="number-pad"
+                value={drillResultForm.durationMinutes}
+                onChangeText={(durationMinutes) =>
+                  setDrillResultForm({ ...drillResultForm, durationMinutes })
+                }
+              />
+              <Field
+                label="本人の感覚"
+                value={drillResultForm.feelingLabel}
+                onChangeText={(feelingLabel) =>
+                  setDrillResultForm({ ...drillResultForm, feelingLabel })
+                }
+              />
+              <Field
+                label="力みの有無"
+                value={drillResultForm.tensionLabel}
+                onChangeText={(tensionLabel) =>
+                  setDrillResultForm({ ...drillResultForm, tensionLabel })
+                }
+              />
+              <Field
+                label="疲労度"
+                value={drillResultForm.fatigueLabel}
+                onChangeText={(fatigueLabel) =>
+                  setDrillResultForm({ ...drillResultForm, fatigueLabel })
+                }
+              />
+              <Field
+                label="メモ"
+                multiline
+                value={drillResultForm.note}
+                onChangeText={(note) => setDrillResultForm({ ...drillResultForm, note })}
+              />
+              <Button label="結果を保存" onPress={() => void saveDailyMinimumResult()} />
+            </Card>
+          ) : null}
 
           <Card>
             <Text style={{ color: theme.text, fontSize: 18, fontWeight: '800' }}>
