@@ -1,0 +1,37 @@
+{
+  "expo": {
+    "name": "DartsSupportApp",
+    "slug": "darts-support-app",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "scheme": "darts-support",
+    "userInterfaceStyle": "automatic",
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "works.shijimi.dartsSupportApp",
+      "infoPlist": {
+        "NSCameraUsageDescription": "投擲フォーム動画を練習記録へ関連付けるためにカメラを使用します。",
+        "NSPhotoLibraryUsageDescription": "投擲フォーム動画を選択して練習記録へ関連付けるために写真ライブラリを使用します。",
+        "NSMicrophoneUsageDescription": "フォーム動画の撮影時に音声を含めるためにマイクを使用します。"
+      }
+    },
+    "android": {
+      "package": "works.shijimi.dartsupportapp"
+    },
+    "plugins": [
+      "expo-router",
+      "expo-sqlite",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "フォーム動画を選択して練習記録へ関連付けます。",
+          "cameraPermission": "フォーム動画を撮影して練習記録へ関連付けます。",
+          "microphonePermission": "フォーム動画の撮影時に音声を含めます。"
+        }
+      ]
+    ],
+    "experiments": {
+      "typedRoutes": true
+    }
+  }
+}
