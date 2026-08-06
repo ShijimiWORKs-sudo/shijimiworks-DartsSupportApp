@@ -1,11 +1,13 @@
 import { SQLiteProvider, useSQLiteContext } from 'expo-sqlite';
 import {
+  Component,
   Suspense,
   createContext,
   useCallback,
   useContext,
   useMemo,
   useState,
+  type ErrorInfo,
   type ReactNode,
 } from 'react';
 import { Platform, Text, View } from 'react-native';
@@ -23,16 +25,13 @@ import { selectSupportRepositoryMode } from './repositoryMode';
 const SupportRepositoryContext = createContext<SupportRepository | null>(null);
 
 export function SupportDatabaseProvider({ children }: { children: ReactNode }) {
-  const [initError, setInitError] = useState<Error | null>(null);
   const [retryKey, setRetryKey] = useState(0);
   const repositoryMode = selectSupportRepositoryMode(Platform.OS);
   const handleInit = useCallback(async (db: SupportDatabase) => {
-    setInitError(null);
     await initializeSupportDatabase(db);
   }, []);
 
   const retry = useCallback(() => {
-    setInitError(null);
     setRetryKey((current) => current + 1);
   }, []);
 
@@ -40,26 +39,52 @@ export function SupportDatabaseProvider({ children }: { children: ReactNode }) {
     return <WebPreviewRepositoryProvider>{children}</WebPreviewRepositoryProvider>;
   }
 
-  if (initError) {
-    return <DatabaseErrorView error={initError} onRetry={retry} />;
+  return (
+    <DatabaseErrorBoundary key={retryKey} onRetry={retry}>
+      <Suspense fallback={<DatabaseLoadingView />}>
+        <SQLiteProvider databaseName={SUPPORT_DATABASE_FILE_NAME} onInit={handleInit} useSuspense>
+          <SupportRepositoryBridge>{children}</SupportRepositoryBridge>
+        </SQLiteProvider>
+      </Suspense>
+    </DatabaseErrorBoundary>
+  );
+}
+
+type DatabaseErrorBoundaryProps = {
+  children: ReactNode;
+  onRetry: () => void;
+};
+
+type DatabaseErrorBoundaryState = {
+  error: Error | null;
+};
+
+class DatabaseErrorBoundary extends Component<
+  DatabaseErrorBoundaryProps,
+  DatabaseErrorBoundaryState
+> {
+  state: DatabaseErrorBoundaryState = { error: null };
+
+  static getDerivedStateFromError(error: Error) {
+    return { error };
   }
 
-  return (
-    <Suspense fallback={<DatabaseLoadingView />}>
-      <SQLiteProvider
-        key={retryKey}
-        databaseName={SUPPORT_DATABASE_FILE_NAME}
-        onInit={handleInit}
-        onError={(error) => {
-          console.warn('DartsSupportApp database initialization failed', error);
-          setInitError(error);
-        }}
-        useSuspense
-      >
-        <SupportRepositoryBridge>{children}</SupportRepositoryBridge>
-      </SQLiteProvider>
-    </Suspense>
-  );
+  componentDidCatch(error: Error, errorInfo: ErrorInfo) {
+    if (__DEV__) {
+      console.warn(
+        'DartsSupportApp database initialization failed',
+        error,
+        errorInfo.componentStack,
+      );
+    }
+  }
+
+  render() {
+    if (this.state.error) {
+      return <DatabaseErrorView error={this.state.error} onRetry={this.props.onRetry} />;
+    }
+    return this.props.children;
+  }
 }
 
 function WebPreviewRepositoryProvider({ children }: { children: ReactNode }) {
@@ -119,7 +144,7 @@ function DatabaseErrorView({ error, onRetry }: { error: Error; onRetry: () => vo
       <Text style={{ marginTop: 8, color: '#64748b', lineHeight: 20 }}>
         アプリを閉じずに再試行できます。繰り返し失敗する場合は、PC側Metroのエラー内容も確認してください。
       </Text>
-      <Text style={{ marginTop: 8, color: '#991b1b' }}>{error.message}</Text>
+      {__DEV__ ? <Text style={{ marginTop: 8, color: '#991b1b' }}>{error.message}</Text> : null}
       <View style={{ marginTop: 12 }}>
         <Button label="再試行" onPress={onRetry} />
       </View>

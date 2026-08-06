@@ -61,6 +61,17 @@ test('実機起動用scriptが用意されている', () => {
   assert.equal(packageJson.scripts['start:clear'], 'expo start -c');
 });
 
+test('SQLiteProviderでuseSuspenseとonErrorを併用しない', () => {
+  const providerSource = fs.readFileSync(
+    path.join(root, 'src/features/support/SupportDatabaseProvider.tsx'),
+    'utf8',
+  );
+
+  assert.match(providerSource, /<SQLiteProvider[\s\S]*useSuspense/);
+  assert.doesNotMatch(providerSource, /<SQLiteProvider[\s\S]*onError=/);
+  assert.match(providerSource, /DatabaseErrorBoundary/);
+});
+
 function listFiles(directories: string[], extensions: string[]): string[] {
   const files: string[] = [];
   for (const directory of directories) {
