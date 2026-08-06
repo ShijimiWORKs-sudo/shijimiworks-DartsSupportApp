@@ -123,6 +123,7 @@ export default function TrainingScreen() {
     () => (activeGame ? (throwsByGame[activeGame.id] ?? []) : []),
     [activeGame, throwsByGame],
   );
+  const analysis = useMemo(() => analyzeThrows(Object.values(throwsByGame).flat()), [throwsByGame]);
 
   if (!repository) {
     return unavailableView;
@@ -437,6 +438,22 @@ export default function TrainingScreen() {
                 onPress={() => void repo.confirmLevelPromotion().then(reload)}
               />
             </View>
+          </Card>
+
+          <Card>
+            <Text style={{ color: theme.text, fontSize: 18, fontWeight: '800' }}>
+              得意・苦手分析
+            </Text>
+            <Text style={{ color: theme.muted, marginTop: 6, lineHeight: 20 }}>
+              記録投数 {analysis.totalThrows} / 写真判定 {analysis.photoThrows} / 手入力{' '}
+              {analysis.manualThrows}
+            </Text>
+            <Text style={{ color: theme.text, marginTop: 6, lineHeight: 20 }}>
+              得意: {analysis.strongNumbers || '未判定'} / 苦手: {analysis.weakNumbers || '未判定'}
+            </Text>
+            <Text style={{ color: theme.muted, marginTop: 4, lineHeight: 20 }}>
+              初期版は保存済み投擲の命中率と入力方法から集計します。公式レーティングではありません。
+            </Text>
           </Card>
 
           <Card>
@@ -839,4 +856,34 @@ function photoStepLabel(step: 'center' | 'twenty' | 'outer' | 'throws') {
     outer: 'ダブル外周を4点以上タップ',
     throws: 'ダーツ先端を3本タップ',
   }[step];
+}
+
+function analyzeThrows(throws: TrainingThrowRow[]) {
+  const bySegment = new Map<string, { hit: number; total: number }>();
+  for (const dart of throws) {
+    const key = dart.target_number ?? dart.segment ?? '未指定';
+    const current = bySegment.get(key) ?? { hit: 0, total: 0 };
+    current.total += 1;
+    if (dart.score > 0) {
+      current.hit += 1;
+    }
+    bySegment.set(key, current);
+  }
+  const ranked = [...bySegment.entries()].sort(
+    (a, b) => b[1].hit / b[1].total - a[1].hit / a[1].total,
+  );
+  const photoThrows = throws.filter((dart) => dart.input_method.startsWith('photo')).length;
+  return {
+    totalThrows: throws.length,
+    photoThrows,
+    manualThrows: throws.length - photoThrows,
+    strongNumbers: ranked
+      .slice(0, 3)
+      .map(([segment]) => segment)
+      .join(', '),
+    weakNumbers: ranked
+      .slice(-3)
+      .map(([segment]) => segment)
+      .join(', '),
+  };
 }

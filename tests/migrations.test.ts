@@ -42,3 +42,22 @@ test('migration 002を新規DBへ適用でき、再実行しても壊れない',
   assert.ok(tableNames.includes('throw_photo_sessions'));
   assert.ok(tableNames.includes('confirmed_throw_positions'));
 });
+
+test('新規練習データはAccount/Playerで分離できる列を持つ', () => {
+  const db = new DatabaseSync(':memory:');
+  db.exec(MIGRATION_001_INITIAL);
+  db.exec(MIGRATION_002_LEVEL_TRAINING_PHOTO_SCORING);
+
+  for (const table of [
+    'player_skill_profiles',
+    'training_game_sessions',
+    'training_throws',
+    'throw_photo_sessions',
+    'confirmed_throw_positions',
+  ]) {
+    const columns = db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
+    const names = columns.map((column) => column.name);
+    assert.ok(names.includes('account_id'), `${table} should include account_id`);
+    assert.ok(names.includes('player_id'), `${table} should include player_id`);
+  }
+});

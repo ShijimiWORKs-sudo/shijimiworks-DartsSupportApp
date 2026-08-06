@@ -91,7 +91,7 @@ export default function BackupScreen() {
             <Text style={{ color: theme.text, fontSize: 18, fontWeight: '800' }}>動画の扱い</Text>
             <Text style={{ color: theme.muted, marginTop: 6, lineHeight: 20 }}>
               初期版のバックアップは動画本体を含めません。form_videos
-              のURI、撮影方向、メモなどのメタデータだけを保存します。復元後に端末内ファイルが移動・削除されている場合は、動画を再選択してください。
+              のURI、撮影方向、メモなどのメタデータだけを保存します。写真判定も写真本体は含めず、URI、キャリブレーション、候補、確定座標だけを保存します。復元後に端末内ファイルが移動・削除されている場合は、動画や写真を再選択してください。
             </Text>
           </Card>
           {__DEV__ ? (

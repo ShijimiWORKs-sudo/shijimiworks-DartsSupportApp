@@ -12,6 +12,9 @@ iPhone と Expo Go を主対象にした、ダーツ練習支援アプリの初�
 - ChatGPT 用の評価依頼文をクリップボードへコピーする
 - ChatGPT の回答全文を貼り付け、見出しごとに解析して保存する
 - 改善課題、次回フォーカス、練習候補を継続管理する
+- CからSAまでの独自レベル、昇格候補、レベル履歴を管理する
+- COUNT-UP、CRICKET COUNT-UP、SHOOT OUT、EAGLE'S EYE、FINISH TRAINER、DARTS LEVEL CHECKを一人用練習として記録する
+- 写真から盤面を手動キャリブレーションし、3投の得点候補をユーザー確認後に保存する
 - SQLite データを JSON で Export/Import する
 
 ## 実装しないこと
