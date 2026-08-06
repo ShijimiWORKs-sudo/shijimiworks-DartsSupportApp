@@ -6,9 +6,10 @@ const path = require('node:path');
 const { MIGRATIONS, CURRENT_SCHEMA_VERSION } = require('../src/db/schema.ts');
 const { assessmentHeadingMap } = require('../src/domain/assessment.ts');
 
-assert.equal(CURRENT_SCHEMA_VERSION, 1);
-assert.equal(MIGRATIONS.length, 1);
+assert.equal(CURRENT_SCHEMA_VERSION, 2);
+assert.equal(MIGRATIONS.length, 2);
 assert.equal(MIGRATIONS[0].version, 1);
+assert.equal(MIGRATIONS[1].version, 2);
 
 const requiredTables = [
   'practice_menu_templates',
@@ -22,10 +23,22 @@ const requiredTables = [
   'improvement_issue_history',
   'practice_recommendations',
   'next_focus_items',
+  'player_skill_profiles',
+  'player_level_history',
+  'level_check_sessions',
+  'level_check_results',
+  'training_game_sessions',
+  'training_rounds',
+  'training_throws',
+  'board_calibrations',
+  'throw_photo_sessions',
+  'throw_detection_candidates',
+  'confirmed_throw_positions',
 ];
 
+const allMigrationSql = MIGRATIONS.map((migration) => migration.sql).join('\n');
 for (const table of requiredTables) {
-  assert.match(MIGRATIONS[0].sql, new RegExp(`CREATE TABLE IF NOT EXISTS ${table}`));
+  assert.match(allMigrationSql, new RegExp(`CREATE TABLE IF NOT EXISTS ${table}`));
 }
 
 assert.equal(Object.keys(assessmentHeadingMap).length, 15);

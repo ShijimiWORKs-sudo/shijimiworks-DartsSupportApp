@@ -1,5 +1,5 @@
 export const SUPPORT_DATABASE_FILE_NAME = 'darts_support.db';
-export const CURRENT_SCHEMA_VERSION = 1;
+export const CURRENT_SCHEMA_VERSION = 2;
 
 export const MIGRATION_001_INITIAL = `
 PRAGMA foreign_keys = ON;
@@ -275,10 +275,222 @@ CREATE INDEX IF NOT EXISTS idx_next_focus_active
 ON next_focus_items(account_id, player_id, status, priority, created_at DESC);
 `;
 
+export const MIGRATION_002_LEVEL_TRAINING_PHOTO_SCORING = `
+PRAGMA foreign_keys = ON;
+
+CREATE TABLE IF NOT EXISTS player_skill_profiles (
+  id TEXT PRIMARY KEY NOT NULL,
+  account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  player_id TEXT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+  current_level TEXT NOT NULL DEFAULT 'C',
+  provisional_level TEXT,
+  level_started_at TEXT NOT NULL,
+  promotion_ready INTEGER NOT NULL DEFAULT 0,
+  promotion_test_count INTEGER NOT NULL DEFAULT 0,
+  promotion_test_pass_count INTEGER NOT NULL DEFAULT 0,
+  last_level_check_at TEXT,
+  level_confidence REAL NOT NULL DEFAULT 0,
+  total_practice_count INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_player_skill_profiles_player
+ON player_skill_profiles(account_id, player_id);
+
+CREATE TABLE IF NOT EXISTS player_level_history (
+  id TEXT PRIMARY KEY NOT NULL,
+  account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  player_id TEXT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+  previous_level TEXT NOT NULL,
+  next_level TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  judgement_json TEXT NOT NULL,
+  user_confirmed INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS level_check_sessions (
+  id TEXT PRIMARY KEY NOT NULL,
+  account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  player_id TEXT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+  training_game_session_id TEXT,
+  started_level TEXT NOT NULL,
+  proposed_level TEXT,
+  overall_score REAL NOT NULL DEFAULT 0,
+  passed INTEGER NOT NULL DEFAULT 0,
+  criteria_label TEXT NOT NULL DEFAULT 'DartsSupportApp独自基準',
+  started_at TEXT NOT NULL,
+  completed_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS level_check_results (
+  id TEXT PRIMARY KEY NOT NULL,
+  account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  player_id TEXT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+  level_check_session_id TEXT NOT NULL REFERENCES level_check_sessions(id) ON DELETE CASCADE,
+  part_key TEXT NOT NULL,
+  part_label TEXT NOT NULL,
+  raw_value REAL NOT NULL DEFAULT 0,
+  normalized_score REAL NOT NULL DEFAULT 0,
+  weight REAL NOT NULL,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS training_game_sessions (
+  id TEXT PRIMARY KEY NOT NULL,
+  account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  player_id TEXT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+  practice_session_id TEXT REFERENCES practice_sessions(id) ON DELETE SET NULL,
+  daily_item_id TEXT REFERENCES daily_practice_items(id) ON DELETE SET NULL,
+  game_type TEXT NOT NULL,
+  title TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'in_progress',
+  current_round INTEGER NOT NULL DEFAULT 1,
+  current_throw INTEGER NOT NULL DEFAULT 0,
+  bull_mode TEXT,
+  out_mode TEXT,
+  target_json TEXT,
+  summary_json TEXT,
+  started_at TEXT NOT NULL,
+  completed_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  deleted_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_training_game_sessions_player
+ON training_game_sessions(account_id, player_id, status, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS training_rounds (
+  id TEXT PRIMARY KEY NOT NULL,
+  account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  player_id TEXT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+  game_session_id TEXT NOT NULL REFERENCES training_game_sessions(id) ON DELETE CASCADE,
+  round_number INTEGER NOT NULL,
+  target_number TEXT,
+  score INTEGER NOT NULL DEFAULT 0,
+  marks INTEGER NOT NULL DEFAULT 0,
+  success INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_training_rounds_session_round
+ON training_rounds(game_session_id, round_number);
+
+CREATE TABLE IF NOT EXISTS training_throws (
+  id TEXT PRIMARY KEY NOT NULL,
+  account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  player_id TEXT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+  game_session_id TEXT NOT NULL REFERENCES training_game_sessions(id) ON DELETE CASCADE,
+  round_id TEXT REFERENCES training_rounds(id) ON DELETE SET NULL,
+  round_number INTEGER NOT NULL,
+  throw_number INTEGER NOT NULL,
+  target_number TEXT,
+  segment TEXT,
+  multiplier INTEGER NOT NULL DEFAULT 0,
+  score INTEGER NOT NULL DEFAULT 0,
+  normalized_x REAL,
+  normalized_y REAL,
+  radius REAL,
+  angle REAL,
+  confidence REAL NOT NULL DEFAULT 1,
+  input_method TEXT NOT NULL DEFAULT 'manual_score',
+  is_manual_override INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_training_throws_session
+ON training_throws(game_session_id, round_number, throw_number);
+
+CREATE TABLE IF NOT EXISTS board_calibrations (
+  id TEXT PRIMARY KEY NOT NULL,
+  account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  player_id TEXT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+  photo_session_id TEXT,
+  center_x REAL NOT NULL,
+  center_y REAL NOT NULL,
+  twenty_x REAL NOT NULL,
+  twenty_y REAL NOT NULL,
+  outer_points_json TEXT NOT NULL,
+  outer_radius REAL NOT NULL,
+  rotation_degrees REAL NOT NULL DEFAULT 0,
+  transform_json TEXT,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS throw_photo_sessions (
+  id TEXT PRIMARY KEY NOT NULL,
+  account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  player_id TEXT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+  game_session_id TEXT REFERENCES training_game_sessions(id) ON DELETE SET NULL,
+  practice_session_id TEXT REFERENCES practice_sessions(id) ON DELETE SET NULL,
+  round_number INTEGER NOT NULL,
+  original_photo_uri TEXT NOT NULL,
+  corrected_photo_uri TEXT,
+  calibration_json TEXT,
+  auto_candidates_json TEXT,
+  confirmed_positions_json TEXT,
+  confidence REAL NOT NULL DEFAULT 0,
+  has_manual_adjustment INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'draft',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS throw_detection_candidates (
+  id TEXT PRIMARY KEY NOT NULL,
+  account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  player_id TEXT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+  photo_session_id TEXT NOT NULL REFERENCES throw_photo_sessions(id) ON DELETE CASCADE,
+  candidate_index INTEGER NOT NULL,
+  normalized_x REAL NOT NULL,
+  normalized_y REAL NOT NULL,
+  radius REAL NOT NULL,
+  angle REAL NOT NULL,
+  segment TEXT NOT NULL,
+  multiplier INTEGER NOT NULL,
+  score INTEGER NOT NULL,
+  confidence REAL NOT NULL,
+  input_method TEXT NOT NULL,
+  accepted INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS confirmed_throw_positions (
+  id TEXT PRIMARY KEY NOT NULL,
+  account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  player_id TEXT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+  photo_session_id TEXT NOT NULL REFERENCES throw_photo_sessions(id) ON DELETE CASCADE,
+  game_session_id TEXT REFERENCES training_game_sessions(id) ON DELETE SET NULL,
+  round_number INTEGER NOT NULL,
+  throw_number INTEGER NOT NULL,
+  normalized_x REAL NOT NULL,
+  normalized_y REAL NOT NULL,
+  radius REAL NOT NULL,
+  angle REAL NOT NULL,
+  segment TEXT NOT NULL,
+  multiplier INTEGER NOT NULL,
+  score INTEGER NOT NULL,
+  confidence REAL NOT NULL,
+  input_method TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+`;
+
 export const MIGRATIONS = [
   {
     version: 1,
     name: '001_daily_practice_form_ai_import',
     sql: MIGRATION_001_INITIAL,
+  },
+  {
+    version: 2,
+    name: '002_level_training_photo_scoring',
+    sql: MIGRATION_002_LEVEL_TRAINING_PHOTO_SCORING,
   },
 ] as const;

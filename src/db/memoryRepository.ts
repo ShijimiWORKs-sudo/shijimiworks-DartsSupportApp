@@ -18,13 +18,31 @@ import type {
   DailyPracticeItemRow,
   FormVideoRow,
   ImprovementIssueRow,
+  LevelHistoryRow,
   NextFocusRow,
   PracticeResultInput,
   PracticeSessionRow,
   RecommendationRow,
+  SavePhotoSessionInput,
   SaveVideoInput,
+  SkillProfileRow,
+  StartTrainingGameInput,
   SupportRepository,
+  ThrowPhotoSessionRow,
+  TrainingGameSessionRow,
+  TrainingThrowRow,
 } from './repository';
+import {
+  TRAINING_GAMES,
+  calculateLevelCheckScore,
+  confirmPromotion,
+  evaluatePromotion,
+  initialLevelProfile,
+  proposeLevelFromScore,
+  recommendMenusForLevel,
+  summarizeTrainingGame,
+  type TrainingThrowInput,
+} from '../domain/training';
 
 const accountId = 'local-account';
 const playerId = 'owner-player';
@@ -93,6 +111,23 @@ export function createMemorySupportRepository(): SupportRepository {
   const issues: ImprovementIssueRow[] = [];
   const focusItems: NextFocusRow[] = [];
   const recommendations: RecommendationRow[] = [];
+  const initialProfile = initialLevelProfile();
+  const skillProfile: SkillProfileRow = {
+    id: 'skill-owner-player',
+    current_level: initialProfile.currentLevel,
+    provisional_level: initialProfile.provisionalLevel,
+    level_started_at: nowIso(),
+    promotion_ready: 0,
+    promotion_test_count: 0,
+    promotion_test_pass_count: 0,
+    last_level_check_at: null,
+    level_confidence: 0,
+    total_practice_count: 0,
+  };
+  const levelHistory: LevelHistoryRow[] = [];
+  const trainingGames: TrainingGameSessionRow[] = [];
+  const trainingThrows: TrainingThrowRow[] = [];
+  const photoSessions: ThrowPhotoSessionRow[] = [];
 
   const repo: SupportRepository = {
     async getOrCreatePlan() {
@@ -344,6 +379,196 @@ export function createMemorySupportRepository(): SupportRepository {
         recommendation.status = status;
       }
     },
+    async getSkillProfile() {
+      return { ...skillProfile };
+    },
+    async listLevelHistory() {
+      return [...levelHistory];
+    },
+    async recordLevelCheck(parts) {
+      const overallScore = calculateLevelCheckScore(parts);
+      const proposedLevel = proposeLevelFromScore(overallScore);
+      const passed = proposedLevel !== skillProfile.current_level;
+      const evaluated = evaluatePromotion(
+        {
+          currentLevel: skillProfile.current_level,
+          provisionalLevel: skillProfile.provisional_level,
+          promotionReady: skillProfile.promotion_ready === 1,
+          promotionTestCount: skillProfile.promotion_test_count,
+          promotionTestPassCount: skillProfile.promotion_test_pass_count,
+          levelConfidence: skillProfile.level_confidence,
+          totalPracticeCount: skillProfile.total_practice_count,
+        },
+        passed,
+      );
+      skillProfile.provisional_level = evaluated.provisionalLevel;
+      skillProfile.promotion_ready = evaluated.promotionReady ? 1 : 0;
+      skillProfile.promotion_test_count = evaluated.promotionTestCount;
+      skillProfile.promotion_test_pass_count = evaluated.promotionTestPassCount;
+      skillProfile.level_confidence = overallScore;
+      skillProfile.total_practice_count += 1;
+      skillProfile.last_level_check_at = nowIso();
+      return { id: id('levelcheck'), overallScore, proposedLevel, passed };
+    },
+    async confirmLevelPromotion() {
+      const promoted = confirmPromotion({
+        currentLevel: skillProfile.current_level,
+        provisionalLevel: skillProfile.provisional_level,
+        promotionReady: skillProfile.promotion_ready === 1,
+        promotionTestCount: skillProfile.promotion_test_count,
+        promotionTestPassCount: skillProfile.promotion_test_pass_count,
+        levelConfidence: skillProfile.level_confidence,
+        totalPracticeCount: skillProfile.total_practice_count,
+      });
+      if (promoted.currentLevel !== skillProfile.current_level) {
+        levelHistory.unshift({
+          id: id('levelhist'),
+          previous_level: skillProfile.current_level,
+          next_level: promoted.currentLevel,
+          reason: 'レベルチェック3回中2回合格後のユーザー確認',
+          judgement_json: JSON.stringify({ criteria: 'DartsSupportApp独自基準' }),
+          user_confirmed: 1,
+          created_at: nowIso(),
+        });
+      }
+      skillProfile.current_level = promoted.currentLevel;
+      skillProfile.provisional_level = promoted.provisionalLevel;
+      skillProfile.promotion_ready = promoted.promotionReady ? 1 : 0;
+      skillProfile.promotion_test_count = promoted.promotionTestCount;
+      skillProfile.promotion_test_pass_count = promoted.promotionTestPassCount;
+      skillProfile.level_started_at = nowIso();
+    },
+    async listLevelRecommendations(date) {
+      return recommendMenusForLevel(skillProfile.current_level, date);
+    },
+    async startTrainingGame(input: StartTrainingGameInput) {
+      const definition = TRAINING_GAMES.find((game) => game.type === input.gameType);
+      const gameId = id('game');
+      trainingGames.unshift({
+        id: gameId,
+        practice_session_id: input.practiceSessionId ?? null,
+        daily_item_id: input.dailyItemId ?? null,
+        game_type: input.gameType,
+        title: definition?.title ?? input.gameType,
+        status: 'in_progress',
+        current_round: 1,
+        current_throw: 0,
+        bull_mode: input.bullMode ?? null,
+        out_mode: input.outMode ?? null,
+        target_json: input.targetJson ?? null,
+        summary_json: null,
+        started_at: nowIso(),
+        completed_at: null,
+        created_at: nowIso(),
+      });
+      return gameId;
+    },
+    async saveTrainingThrows(gameSessionId, throws: TrainingThrowInput[]) {
+      for (const dart of throws) {
+        trainingThrows.push({
+          id: id('throw'),
+          game_session_id: gameSessionId,
+          round_number: dart.roundNumber,
+          throw_number: dart.throwNumber,
+          target_number: dart.targetNumber == null ? null : String(dart.targetNumber),
+          segment: dart.segment == null ? null : String(dart.segment),
+          multiplier: dart.multiplier ?? 0,
+          score: dart.score,
+          normalized_x: dart.x ?? null,
+          normalized_y: dart.y ?? null,
+          radius: dart.radius ?? null,
+          angle: dart.angle ?? null,
+          confidence: dart.confidence ?? 1,
+          input_method: dart.inputMethod,
+          is_manual_override: dart.isManualOverride ? 1 : 0,
+          created_at: nowIso(),
+        });
+      }
+      const game = trainingGames.find((candidate) => candidate.id === gameSessionId);
+      if (game) {
+        const sessionThrows: TrainingThrowInput[] = trainingThrows
+          .filter((candidate) => candidate.game_session_id === gameSessionId)
+          .map((row) => ({
+            roundNumber: row.round_number,
+            throwNumber: row.throw_number,
+            targetNumber:
+              row.target_number === 'BULL'
+                ? 'BULL'
+                : row.target_number
+                  ? Number(row.target_number)
+                  : null,
+            segment:
+              row.segment === 'BULL' || row.segment === 'OUT'
+                ? row.segment
+                : row.segment
+                  ? Number(row.segment)
+                  : null,
+            multiplier: row.multiplier as 0 | 1 | 2 | 3,
+            score: row.score,
+            radius: row.radius,
+            inputMethod: row.input_method as TrainingThrowInput['inputMethod'],
+          }));
+        game.summary_json = JSON.stringify(summarizeTrainingGame(game.game_type, sessionThrows));
+      }
+    },
+    async completeTrainingGame(gameSessionId) {
+      const game = trainingGames.find((candidate) => candidate.id === gameSessionId);
+      if (game) {
+        game.status = 'completed';
+        game.completed_at = nowIso();
+      }
+    },
+    async listTrainingGames() {
+      return [...trainingGames];
+    },
+    async listTrainingThrows(gameSessionId) {
+      return trainingThrows.filter((dart) => dart.game_session_id === gameSessionId);
+    },
+    async saveThrowPhotoSession(input: SavePhotoSessionInput) {
+      const photoId = id('photo');
+      const averageConfidence = input.confirmedPositions.length
+        ? input.confirmedPositions.reduce((sum, dart) => sum + dart.confidence, 0) /
+          input.confirmedPositions.length
+        : 0;
+      photoSessions.unshift({
+        id: photoId,
+        game_session_id: input.gameSessionId ?? null,
+        practice_session_id: input.practiceSessionId ?? null,
+        round_number: input.roundNumber,
+        original_photo_uri: input.originalPhotoUri,
+        corrected_photo_uri: input.correctedPhotoUri ?? null,
+        calibration_json: JSON.stringify(input.calibration),
+        auto_candidates_json: JSON.stringify(input.autoCandidates),
+        confirmed_positions_json: JSON.stringify(input.confirmedPositions),
+        confidence: averageConfidence,
+        has_manual_adjustment: input.hasManualAdjustment ? 1 : 0,
+        status: 'confirmed',
+        created_at: nowIso(),
+      });
+      if (input.gameSessionId) {
+        await repo.saveTrainingThrows(
+          input.gameSessionId,
+          input.confirmedPositions.map((position, index) => ({
+            roundNumber: input.roundNumber,
+            throwNumber: index + 1,
+            segment: position.segment,
+            multiplier: position.multiplier,
+            score: position.score,
+            x: position.x,
+            y: position.y,
+            radius: position.radius,
+            angle: position.angle,
+            confidence: position.confidence,
+            inputMethod: position.inputMethod,
+            isManualOverride: input.hasManualAdjustment,
+          })),
+        );
+      }
+      return photoId;
+    },
+    async listThrowPhotoSessions() {
+      return [...photoSessions];
+    },
     async exportBackup() {
       return JSON.stringify(
         {
@@ -358,7 +583,13 @@ export function createMemorySupportRepository(): SupportRepository {
           improvement_issues: issues,
           practice_recommendations: recommendations,
           next_focus_items: focusItems,
+          player_skill_profiles: [skillProfile],
+          player_level_history: levelHistory,
+          training_game_sessions: trainingGames,
+          training_throws: trainingThrows,
+          throw_photo_sessions: photoSessions,
           videoPolicy: '動画本体は含めません。',
+          photoPolicy: '写真本体は含めません。',
         },
         null,
         2,

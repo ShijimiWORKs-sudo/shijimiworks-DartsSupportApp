@@ -55,5 +55,15 @@ async function ensureDefaultAccountAndPlayer(db: SupportDatabase): Promise<void>
       now,
       now,
     );
+    await db.runAsync(
+      `INSERT OR IGNORE INTO player_skill_profiles(
+         id, account_id, player_id, current_level, provisional_level, level_started_at,
+         promotion_ready, promotion_test_count, promotion_test_pass_count, last_level_check_at,
+         level_confidence, total_practice_count, created_at, updated_at
+       ) VALUES ('skill-owner-player', 'local-account', 'owner-player', 'C', NULL, ?, 0, 0, 0, NULL, 0, 0, ?, ?)`,
+      now,
+      now,
+      now,
+    );
   });
 }

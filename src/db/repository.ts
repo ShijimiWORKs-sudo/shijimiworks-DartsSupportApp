@@ -16,6 +16,21 @@ import type {
   RecommendationStatus,
   VideoDirection,
 } from '../domain/types';
+import {
+  TRAINING_GAMES,
+  calculateLevelCheckScore,
+  confirmPromotion,
+  evaluatePromotion,
+  proposeLevelFromScore,
+  recommendMenusForLevel,
+  summarizeTrainingGame,
+  type BullMode,
+  type FinishOutMode,
+  type PlayerLevel,
+  type ThrowPosition,
+  type TrainingGameType,
+  type TrainingThrowInput,
+} from '../domain/training';
 
 export const DEFAULT_ACCOUNT_ID = 'local-account';
 export const DEFAULT_PLAYER_ID = 'owner-player';
@@ -134,6 +149,103 @@ export type SaveVideoInput = {
   handedness?: string | null;
   dartWeightGrams?: number | null;
   memo?: string | null;
+};
+
+export type SkillProfileRow = {
+  id: string;
+  current_level: PlayerLevel;
+  provisional_level: PlayerLevel | null;
+  level_started_at: string;
+  promotion_ready: number;
+  promotion_test_count: number;
+  promotion_test_pass_count: number;
+  last_level_check_at: string | null;
+  level_confidence: number;
+  total_practice_count: number;
+};
+
+export type LevelHistoryRow = {
+  id: string;
+  previous_level: PlayerLevel;
+  next_level: PlayerLevel;
+  reason: string;
+  judgement_json: string;
+  user_confirmed: number;
+  created_at: string;
+};
+
+export type TrainingGameSessionRow = {
+  id: string;
+  practice_session_id: string | null;
+  daily_item_id: string | null;
+  game_type: TrainingGameType;
+  title: string;
+  status: string;
+  current_round: number;
+  current_throw: number;
+  bull_mode: BullMode | null;
+  out_mode: FinishOutMode | null;
+  target_json: string | null;
+  summary_json: string | null;
+  started_at: string;
+  completed_at: string | null;
+  created_at: string;
+};
+
+export type TrainingThrowRow = {
+  id: string;
+  game_session_id: string;
+  round_number: number;
+  throw_number: number;
+  target_number: string | null;
+  segment: string | null;
+  multiplier: number;
+  score: number;
+  normalized_x: number | null;
+  normalized_y: number | null;
+  radius: number | null;
+  angle: number | null;
+  confidence: number;
+  input_method: string;
+  is_manual_override: number;
+  created_at: string;
+};
+
+export type ThrowPhotoSessionRow = {
+  id: string;
+  game_session_id: string | null;
+  practice_session_id: string | null;
+  round_number: number;
+  original_photo_uri: string;
+  corrected_photo_uri: string | null;
+  calibration_json: string | null;
+  auto_candidates_json: string | null;
+  confirmed_positions_json: string | null;
+  confidence: number;
+  has_manual_adjustment: number;
+  status: string;
+  created_at: string;
+};
+
+export type StartTrainingGameInput = {
+  gameType: TrainingGameType;
+  practiceSessionId?: string | null;
+  dailyItemId?: string | null;
+  bullMode?: BullMode | null;
+  outMode?: FinishOutMode | null;
+  targetJson?: string | null;
+};
+
+export type SavePhotoSessionInput = {
+  gameSessionId?: string | null;
+  practiceSessionId?: string | null;
+  roundNumber: number;
+  originalPhotoUri: string;
+  correctedPhotoUri?: string | null;
+  calibration: unknown;
+  autoCandidates: ThrowPosition[];
+  confirmedPositions: ThrowPosition[];
+  hasManualAdjustment: boolean;
 };
 
 function nowIso(): string {
@@ -910,6 +1022,469 @@ export function createSupportRepository(db: SQLiteDatabase) {
     );
   }
 
+  async function getSkillProfile(): Promise<SkillProfileRow> {
+    const existing = await db.getFirstAsync<SkillProfileRow>(
+      `SELECT * FROM player_skill_profiles WHERE account_id = ? AND player_id = ?`,
+      DEFAULT_ACCOUNT_ID,
+      DEFAULT_PLAYER_ID,
+    );
+    if (existing) {
+      return existing;
+    }
+    const timestamp = nowIso();
+    await db.runAsync(
+      `INSERT INTO player_skill_profiles(
+        id, account_id, player_id, current_level, provisional_level, level_started_at,
+        promotion_ready, promotion_test_count, promotion_test_pass_count, last_level_check_at,
+        level_confidence, total_practice_count, created_at, updated_at
+      ) VALUES (?, ?, ?, 'C', NULL, ?, 0, 0, 0, NULL, 0, 0, ?, ?)`,
+      'skill-owner-player',
+      DEFAULT_ACCOUNT_ID,
+      DEFAULT_PLAYER_ID,
+      timestamp,
+      timestamp,
+      timestamp,
+    );
+    return (await db.getFirstAsync<SkillProfileRow>(
+      `SELECT * FROM player_skill_profiles WHERE account_id = ? AND player_id = ?`,
+      DEFAULT_ACCOUNT_ID,
+      DEFAULT_PLAYER_ID,
+    )) as SkillProfileRow;
+  }
+
+  async function listLevelHistory(): Promise<LevelHistoryRow[]> {
+    return db.getAllAsync<LevelHistoryRow>(
+      `SELECT * FROM player_level_history
+       WHERE account_id = ? AND player_id = ?
+       ORDER BY created_at DESC`,
+      DEFAULT_ACCOUNT_ID,
+      DEFAULT_PLAYER_ID,
+    );
+  }
+
+  async function recordLevelCheck(parts: {
+    countUp: number;
+    bull: number;
+    twenty: number;
+    cricket: number;
+    finish: number;
+    stability: number;
+  }): Promise<{ id: string; overallScore: number; proposedLevel: PlayerLevel; passed: boolean }> {
+    const profile = await getSkillProfile();
+    const overallScore = calculateLevelCheckScore(parts);
+    const proposedLevel = proposeLevelFromScore(overallScore);
+    const passed = proposedLevel !== profile.current_level;
+    const timestamp = nowIso();
+    const sessionId = id('levelcheck');
+    const weights = [
+      ['countUp', 'COUNT-UP', parts.countUp, 0.25],
+      ['bull', 'BULL 30投', parts.bull, 0.2],
+      ['twenty', '20ナンバー15投', parts.twenty, 0.15],
+      ['cricket', 'CRICKET', parts.cricket, 0.2],
+      ['finish', 'FINISH 5問', parts.finish, 0.1],
+      ['stability', '安定性評価', parts.stability, 0.1],
+    ] as const;
+
+    await db.withTransactionAsync(async () => {
+      await db.runAsync(
+        `INSERT INTO level_check_sessions(
+          id, account_id, player_id, started_level, proposed_level, overall_score, passed,
+          criteria_label, started_at, completed_at, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'DartsSupportApp独自基準', ?, ?, ?, ?)`,
+        sessionId,
+        DEFAULT_ACCOUNT_ID,
+        DEFAULT_PLAYER_ID,
+        profile.current_level,
+        proposedLevel,
+        overallScore,
+        toDbBool(passed),
+        timestamp,
+        timestamp,
+        timestamp,
+        timestamp,
+      );
+      for (const [key, label, raw, weight] of weights) {
+        await db.runAsync(
+          `INSERT INTO level_check_results(
+            id, account_id, player_id, level_check_session_id, part_key, part_label,
+            raw_value, normalized_score, weight, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          id('levelpart'),
+          DEFAULT_ACCOUNT_ID,
+          DEFAULT_PLAYER_ID,
+          sessionId,
+          key,
+          label,
+          raw,
+          raw,
+          weight,
+          timestamp,
+        );
+      }
+      const nextProfile = evaluatePromotion(
+        {
+          currentLevel: profile.current_level,
+          provisionalLevel: profile.provisional_level,
+          promotionReady: fromDbBool(profile.promotion_ready),
+          promotionTestCount: profile.promotion_test_count,
+          promotionTestPassCount: profile.promotion_test_pass_count,
+          levelConfidence: profile.level_confidence,
+          totalPracticeCount: profile.total_practice_count,
+        },
+        passed,
+      );
+      await db.runAsync(
+        `UPDATE player_skill_profiles
+         SET provisional_level = ?, promotion_ready = ?, promotion_test_count = ?,
+             promotion_test_pass_count = ?, last_level_check_at = ?, level_confidence = ?,
+             total_practice_count = total_practice_count + 1, updated_at = ?
+         WHERE account_id = ? AND player_id = ?`,
+        nextProfile.provisionalLevel,
+        toDbBool(nextProfile.promotionReady),
+        nextProfile.promotionTestCount,
+        nextProfile.promotionTestPassCount,
+        timestamp,
+        overallScore,
+        timestamp,
+        DEFAULT_ACCOUNT_ID,
+        DEFAULT_PLAYER_ID,
+      );
+    });
+    return { id: sessionId, overallScore, proposedLevel, passed };
+  }
+
+  async function confirmLevelPromotion(): Promise<void> {
+    const profile = await getSkillProfile();
+    const nextProfile = confirmPromotion({
+      currentLevel: profile.current_level,
+      provisionalLevel: profile.provisional_level,
+      promotionReady: fromDbBool(profile.promotion_ready),
+      promotionTestCount: profile.promotion_test_count,
+      promotionTestPassCount: profile.promotion_test_pass_count,
+      levelConfidence: profile.level_confidence,
+      totalPracticeCount: profile.total_practice_count,
+    });
+    if (nextProfile.currentLevel === profile.current_level) {
+      return;
+    }
+    const timestamp = nowIso();
+    await db.withTransactionAsync(async () => {
+      await db.runAsync(
+        `UPDATE player_skill_profiles
+         SET current_level = ?, provisional_level = NULL, promotion_ready = 0,
+             promotion_test_count = 0, promotion_test_pass_count = 0,
+             level_started_at = ?, updated_at = ?
+         WHERE account_id = ? AND player_id = ?`,
+        nextProfile.currentLevel,
+        timestamp,
+        timestamp,
+        DEFAULT_ACCOUNT_ID,
+        DEFAULT_PLAYER_ID,
+      );
+      await db.runAsync(
+        `INSERT INTO player_level_history(
+          id, account_id, player_id, previous_level, next_level, reason,
+          judgement_json, user_confirmed, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)`,
+        id('levelhist'),
+        DEFAULT_ACCOUNT_ID,
+        DEFAULT_PLAYER_ID,
+        profile.current_level,
+        nextProfile.currentLevel,
+        'レベルチェック3回中2回合格後のユーザー確認',
+        JSON.stringify({
+          promotionTestCount: profile.promotion_test_count,
+          promotionTestPassCount: profile.promotion_test_pass_count,
+          criteria: 'DartsSupportApp独自基準',
+        }),
+        timestamp,
+      );
+    });
+  }
+
+  async function listLevelRecommendations(date: string): Promise<PracticeMenu[]> {
+    const profile = await getSkillProfile();
+    return recommendMenusForLevel(profile.current_level, date);
+  }
+
+  async function startTrainingGame(input: StartTrainingGameInput): Promise<string> {
+    const definition = TRAINING_GAMES.find((game) => game.type === input.gameType);
+    if (!definition) {
+      throw new Error('未対応の練習ゲームです。');
+    }
+    const timestamp = nowIso();
+    const sessionId = id('game');
+    await db.runAsync(
+      `INSERT INTO training_game_sessions(
+        id, account_id, player_id, practice_session_id, daily_item_id, game_type, title,
+        status, current_round, current_throw, bull_mode, out_mode, target_json,
+        started_at, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, 'in_progress', 1, 0, ?, ?, ?, ?, ?, ?)`,
+      sessionId,
+      DEFAULT_ACCOUNT_ID,
+      DEFAULT_PLAYER_ID,
+      input.practiceSessionId ?? null,
+      input.dailyItemId ?? null,
+      input.gameType,
+      definition.title,
+      input.bullMode ?? null,
+      input.outMode ?? null,
+      input.targetJson ?? null,
+      timestamp,
+      timestamp,
+      timestamp,
+    );
+    return sessionId;
+  }
+
+  async function saveTrainingThrows(
+    gameSessionId: string,
+    throws: TrainingThrowInput[],
+  ): Promise<void> {
+    const timestamp = nowIso();
+    await db.withTransactionAsync(async () => {
+      for (const dart of throws) {
+        const roundId = id('round');
+        await db.runAsync(
+          `INSERT OR IGNORE INTO training_rounds(
+            id, account_id, player_id, game_session_id, round_number, target_number,
+            created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+          roundId,
+          DEFAULT_ACCOUNT_ID,
+          DEFAULT_PLAYER_ID,
+          gameSessionId,
+          dart.roundNumber,
+          dart.targetNumber == null ? null : String(dart.targetNumber),
+          timestamp,
+          timestamp,
+        );
+        await db.runAsync(
+          `INSERT INTO training_throws(
+            id, account_id, player_id, game_session_id, round_number, throw_number,
+            target_number, segment, multiplier, score, normalized_x, normalized_y, radius,
+            angle, confidence, input_method, is_manual_override, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          id('throw'),
+          DEFAULT_ACCOUNT_ID,
+          DEFAULT_PLAYER_ID,
+          gameSessionId,
+          dart.roundNumber,
+          dart.throwNumber,
+          dart.targetNumber == null ? null : String(dart.targetNumber),
+          dart.segment == null ? null : String(dart.segment),
+          dart.multiplier ?? 0,
+          dart.score,
+          dart.x ?? null,
+          dart.y ?? null,
+          dart.radius ?? null,
+          dart.angle ?? null,
+          dart.confidence ?? 1,
+          dart.inputMethod,
+          toDbBool(dart.isManualOverride ?? false),
+          timestamp,
+          timestamp,
+        );
+      }
+      await refreshTrainingGameSummary(gameSessionId);
+    });
+  }
+
+  async function refreshTrainingGameSummary(gameSessionId: string): Promise<void> {
+    const rows = await db.getAllAsync<TrainingThrowRow>(
+      `SELECT * FROM training_throws WHERE game_session_id = ? ORDER BY round_number, throw_number`,
+      gameSessionId,
+    );
+    const session = await db.getFirstAsync<{ game_type: TrainingGameType }>(
+      `SELECT game_type FROM training_game_sessions WHERE id = ?`,
+      gameSessionId,
+    );
+    const throws = rows.map((row) => ({
+      roundNumber: row.round_number,
+      throwNumber: row.throw_number,
+      targetNumber: row.target_number,
+      segment:
+        row.segment === 'BULL' || row.segment === 'OUT'
+          ? row.segment
+          : row.segment
+            ? Number(row.segment)
+            : null,
+      multiplier: row.multiplier as 0 | 1 | 2 | 3,
+      score: row.score,
+      x: row.normalized_x,
+      y: row.normalized_y,
+      radius: row.radius,
+      angle: row.angle,
+      confidence: row.confidence,
+      inputMethod: row.input_method as TrainingThrowInput['inputMethod'],
+      isManualOverride: fromDbBool(row.is_manual_override),
+    })) as TrainingThrowInput[];
+    await db.runAsync(
+      `UPDATE training_game_sessions
+       SET summary_json = ?, current_round = COALESCE((SELECT MAX(round_number) FROM training_throws WHERE game_session_id = ?), current_round),
+           current_throw = COALESCE((SELECT MAX(throw_number) FROM training_throws WHERE game_session_id = ? AND round_number = current_round), current_throw),
+           updated_at = ?
+       WHERE id = ?`,
+      JSON.stringify(summarizeTrainingGame(session?.game_type ?? 'COUNT_UP', throws)),
+      gameSessionId,
+      gameSessionId,
+      nowIso(),
+      gameSessionId,
+    );
+  }
+
+  async function completeTrainingGame(gameSessionId: string): Promise<void> {
+    await refreshTrainingGameSummary(gameSessionId);
+    await db.runAsync(
+      `UPDATE training_game_sessions SET status = 'completed', completed_at = ?, updated_at = ? WHERE id = ?`,
+      nowIso(),
+      nowIso(),
+      gameSessionId,
+    );
+  }
+
+  async function listTrainingGames(): Promise<TrainingGameSessionRow[]> {
+    return db.getAllAsync<TrainingGameSessionRow>(
+      `SELECT * FROM training_game_sessions
+       WHERE account_id = ? AND player_id = ? AND deleted_at IS NULL
+       ORDER BY updated_at DESC LIMIT 50`,
+      DEFAULT_ACCOUNT_ID,
+      DEFAULT_PLAYER_ID,
+    );
+  }
+
+  async function listTrainingThrows(gameSessionId: string): Promise<TrainingThrowRow[]> {
+    return db.getAllAsync<TrainingThrowRow>(
+      `SELECT * FROM training_throws
+       WHERE account_id = ? AND player_id = ? AND game_session_id = ?
+       ORDER BY round_number, throw_number`,
+      DEFAULT_ACCOUNT_ID,
+      DEFAULT_PLAYER_ID,
+      gameSessionId,
+    );
+  }
+
+  async function saveThrowPhotoSession(input: SavePhotoSessionInput): Promise<string> {
+    const timestamp = nowIso();
+    const photoSessionId = id('photo');
+    const averageConfidence = input.confirmedPositions.length
+      ? input.confirmedPositions.reduce((sum, dart) => sum + dart.confidence, 0) /
+        input.confirmedPositions.length
+      : 0;
+    await db.withTransactionAsync(async () => {
+      await db.runAsync(
+        `INSERT INTO throw_photo_sessions(
+          id, account_id, player_id, game_session_id, practice_session_id, round_number,
+          original_photo_uri, corrected_photo_uri, calibration_json, auto_candidates_json,
+          confirmed_positions_json, confidence, has_manual_adjustment, status, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'confirmed', ?, ?)`,
+        photoSessionId,
+        DEFAULT_ACCOUNT_ID,
+        DEFAULT_PLAYER_ID,
+        input.gameSessionId ?? null,
+        input.practiceSessionId ?? null,
+        input.roundNumber,
+        input.originalPhotoUri,
+        input.correctedPhotoUri ?? null,
+        JSON.stringify(input.calibration),
+        JSON.stringify(input.autoCandidates),
+        JSON.stringify(input.confirmedPositions),
+        averageConfidence,
+        toDbBool(input.hasManualAdjustment),
+        timestamp,
+        timestamp,
+      );
+      for (let index = 0; index < input.autoCandidates.length; index += 1) {
+        const candidate = input.autoCandidates[index];
+        if (!candidate) {
+          continue;
+        }
+        await db.runAsync(
+          `INSERT INTO throw_detection_candidates(
+            id, account_id, player_id, photo_session_id, candidate_index, normalized_x,
+            normalized_y, radius, angle, segment, multiplier, score, confidence, input_method,
+            accepted, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`,
+          id('candidate'),
+          DEFAULT_ACCOUNT_ID,
+          DEFAULT_PLAYER_ID,
+          photoSessionId,
+          index + 1,
+          candidate.x,
+          candidate.y,
+          candidate.radius,
+          candidate.angle,
+          String(candidate.segment),
+          candidate.multiplier,
+          candidate.score,
+          candidate.confidence,
+          candidate.inputMethod,
+          timestamp,
+        );
+      }
+      for (let index = 0; index < input.confirmedPositions.length; index += 1) {
+        const position = input.confirmedPositions[index];
+        if (!position) {
+          continue;
+        }
+        await db.runAsync(
+          `INSERT INTO confirmed_throw_positions(
+            id, account_id, player_id, photo_session_id, game_session_id, round_number,
+            throw_number, normalized_x, normalized_y, radius, angle, segment, multiplier,
+            score, confidence, input_method, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          id('confirmed'),
+          DEFAULT_ACCOUNT_ID,
+          DEFAULT_PLAYER_ID,
+          photoSessionId,
+          input.gameSessionId ?? null,
+          input.roundNumber,
+          index + 1,
+          position.x,
+          position.y,
+          position.radius,
+          position.angle,
+          String(position.segment),
+          position.multiplier,
+          position.score,
+          position.confidence,
+          position.inputMethod,
+          timestamp,
+        );
+      }
+    });
+    if (input.gameSessionId) {
+      await saveTrainingThrows(
+        input.gameSessionId,
+        input.confirmedPositions.map((position, index) => ({
+          roundNumber: input.roundNumber,
+          throwNumber: index + 1,
+          segment: position.segment,
+          multiplier: position.multiplier,
+          score: position.score,
+          x: position.x,
+          y: position.y,
+          radius: position.radius,
+          angle: position.angle,
+          confidence: position.confidence,
+          inputMethod: position.inputMethod,
+          isManualOverride: input.hasManualAdjustment,
+        })),
+      );
+    }
+    return photoSessionId;
+  }
+
+  async function listThrowPhotoSessions(): Promise<ThrowPhotoSessionRow[]> {
+    return db.getAllAsync<ThrowPhotoSessionRow>(
+      `SELECT * FROM throw_photo_sessions
+       WHERE account_id = ? AND player_id = ?
+       ORDER BY created_at DESC LIMIT 30`,
+      DEFAULT_ACCOUNT_ID,
+      DEFAULT_PLAYER_ID,
+    );
+  }
+
   async function exportBackup(): Promise<string> {
     const tables = [
       'accounts',
@@ -925,12 +1500,25 @@ export function createSupportRepository(db: SQLiteDatabase) {
       'improvement_issue_history',
       'practice_recommendations',
       'next_focus_items',
+      'player_skill_profiles',
+      'player_level_history',
+      'level_check_sessions',
+      'level_check_results',
+      'training_game_sessions',
+      'training_rounds',
+      'training_throws',
+      'board_calibrations',
+      'throw_photo_sessions',
+      'throw_detection_candidates',
+      'confirmed_throw_positions',
     ];
     const payload: Record<string, unknown> = {
       app: 'DartsSupportApp',
       schemaVersion: 1,
       exportedAt: nowIso(),
       videoPolicy: '動画本体はバックアップ対象外です。form_videos.uri とメタデータのみを含みます。',
+      photoPolicy:
+        '写真本体はバックアップ対象外です。throw_photo_sessions.original_photo_uri と判定メタデータのみを含みます。',
     };
     for (const table of tables) {
       payload[table] = await db.getAllAsync(`SELECT * FROM ${table}`);
@@ -1166,6 +1754,186 @@ export function createSupportRepository(db: SQLiteDatabase) {
         'completed_at',
         'deleted_at',
       ],
+      player_skill_profiles: [
+        'id',
+        'account_id',
+        'player_id',
+        'current_level',
+        'provisional_level',
+        'level_started_at',
+        'promotion_ready',
+        'promotion_test_count',
+        'promotion_test_pass_count',
+        'last_level_check_at',
+        'level_confidence',
+        'total_practice_count',
+        'created_at',
+        'updated_at',
+      ],
+      player_level_history: [
+        'id',
+        'account_id',
+        'player_id',
+        'previous_level',
+        'next_level',
+        'reason',
+        'judgement_json',
+        'user_confirmed',
+        'created_at',
+      ],
+      level_check_sessions: [
+        'id',
+        'account_id',
+        'player_id',
+        'training_game_session_id',
+        'started_level',
+        'proposed_level',
+        'overall_score',
+        'passed',
+        'criteria_label',
+        'started_at',
+        'completed_at',
+        'created_at',
+        'updated_at',
+      ],
+      level_check_results: [
+        'id',
+        'account_id',
+        'player_id',
+        'level_check_session_id',
+        'part_key',
+        'part_label',
+        'raw_value',
+        'normalized_score',
+        'weight',
+        'created_at',
+      ],
+      training_game_sessions: [
+        'id',
+        'account_id',
+        'player_id',
+        'practice_session_id',
+        'daily_item_id',
+        'game_type',
+        'title',
+        'status',
+        'current_round',
+        'current_throw',
+        'bull_mode',
+        'out_mode',
+        'target_json',
+        'summary_json',
+        'started_at',
+        'completed_at',
+        'created_at',
+        'updated_at',
+        'deleted_at',
+      ],
+      training_rounds: [
+        'id',
+        'account_id',
+        'player_id',
+        'game_session_id',
+        'round_number',
+        'target_number',
+        'score',
+        'marks',
+        'success',
+        'created_at',
+        'updated_at',
+      ],
+      training_throws: [
+        'id',
+        'account_id',
+        'player_id',
+        'game_session_id',
+        'round_id',
+        'round_number',
+        'throw_number',
+        'target_number',
+        'segment',
+        'multiplier',
+        'score',
+        'normalized_x',
+        'normalized_y',
+        'radius',
+        'angle',
+        'confidence',
+        'input_method',
+        'is_manual_override',
+        'created_at',
+        'updated_at',
+      ],
+      board_calibrations: [
+        'id',
+        'account_id',
+        'player_id',
+        'photo_session_id',
+        'center_x',
+        'center_y',
+        'twenty_x',
+        'twenty_y',
+        'outer_points_json',
+        'outer_radius',
+        'rotation_degrees',
+        'transform_json',
+        'created_at',
+      ],
+      throw_photo_sessions: [
+        'id',
+        'account_id',
+        'player_id',
+        'game_session_id',
+        'practice_session_id',
+        'round_number',
+        'original_photo_uri',
+        'corrected_photo_uri',
+        'calibration_json',
+        'auto_candidates_json',
+        'confirmed_positions_json',
+        'confidence',
+        'has_manual_adjustment',
+        'status',
+        'created_at',
+        'updated_at',
+      ],
+      throw_detection_candidates: [
+        'id',
+        'account_id',
+        'player_id',
+        'photo_session_id',
+        'candidate_index',
+        'normalized_x',
+        'normalized_y',
+        'radius',
+        'angle',
+        'segment',
+        'multiplier',
+        'score',
+        'confidence',
+        'input_method',
+        'accepted',
+        'created_at',
+      ],
+      confirmed_throw_positions: [
+        'id',
+        'account_id',
+        'player_id',
+        'photo_session_id',
+        'game_session_id',
+        'round_number',
+        'throw_number',
+        'normalized_x',
+        'normalized_y',
+        'radius',
+        'angle',
+        'segment',
+        'multiplier',
+        'score',
+        'confidence',
+        'input_method',
+        'created_at',
+      ],
     };
 
     let importedRows = 0;
@@ -1226,6 +1994,18 @@ export function createSupportRepository(db: SQLiteDatabase) {
     listRecommendations,
     applyRecommendation,
     updateRecommendationStatus,
+    getSkillProfile,
+    listLevelHistory,
+    recordLevelCheck,
+    confirmLevelPromotion,
+    listLevelRecommendations,
+    startTrainingGame,
+    saveTrainingThrows,
+    completeTrainingGame,
+    listTrainingGames,
+    listTrainingThrows,
+    saveThrowPhotoSession,
+    listThrowPhotoSessions,
     exportBackup,
     importBackup,
   };
